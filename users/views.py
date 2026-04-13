@@ -4,16 +4,17 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.contrib.auth import login, logout
 
-from .models import User, Class, StudentClass
-from .serializers import (
-    UserRegisterSerializer, UserLoginSerializer, UserSerializer, UserListSerializer,
-    ClassSerializer, ClassCreateSerializer, StudentClassSerializer, JoinClassSerializer
+from users.models import User
+from users.serializers import (
+    UserRegisterSerializer, UserLoginSerializer, UserSerializer,
 )
+from typing import Optional, Dict, Any, Union
 
 
 class AuthViewSet(viewsets.GenericViewSet):
     """用户认证视图集"""
     permission_classes = [AllowAny]
+    serializer_class = UserRegisterSerializer
     
     @action(detail=False, methods=['post'])
     def register(self, request):
@@ -32,7 +33,12 @@ class AuthViewSet(viewsets.GenericViewSet):
         """用户登录"""
         serializer = UserLoginSerializer(data=request.data)
         if serializer.is_valid():
-            user = serializer.validated_data['user']
+            validated: Union[Dict[str, Any], Any] = serializer.validated_data
+            if validated is None:
+                return Response({'error': '验证数据为空'}, status=status.HTTP_400_BAD_REQUEST)
+            user: Optional[User] = validated.get('user')
+            if user is None:
+                return Response({'error': '用户验证失败'}, status=status.HTTP_400_BAD_REQUEST)
             login(request, user)
             return Response({
                 'message': '登录成功',

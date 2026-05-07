@@ -5,6 +5,8 @@ from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from django.db.models import Sum, Avg
 
+from users.models import Class
+from question_bank.models import Question
 from .models import ExamPaper, ExamPaperQuestion, ExamRecord, AnswerDetail, WrongQuestion
 from question_bank.models import Question
 from .serializers import (
@@ -101,6 +103,90 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
         paper.published_at = timezone.now()
         paper.save()
         return Response({'message': '发布成功', 'published_at': paper.published_at})
+    
+
+
+    @action(detail=False, methods=['post'])
+    def auto_generate(self, request):
+        """智能组卷：按难度/题型比例自动抽题"""
+        data = request.data
+        
+        # 获取基本参数
+        name = data.get('name')
+        target_class_id = data.get('target_class')
+        total_score = data.get('total_score', 100)
+        duration = data.get('duration', 120)
+        
+        # 获取分布参数
+        difficulty_distribution = data.get('difficulty_distribution', {})
+        type_distribution = data.get('type_distribution', {})
+        
+        if not name or not target_class_id:
+            return Response({'error': '试卷名称和目标班级不能为空'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            target_class = Class.objects.get(id=target_class_id)
+        except Class.DoesNotExist:
+            return Response({'error': '班级不存在'}, status=status.HTTP_404_NOT_FOUND)
+        
+        # 验证教师权限
+        if request.user.role not in ['teacher', 'admin'] or \
+           (request.user.role == 'teacher' and target_class.teacher != request.user):
+            return Response({'error': '无权为该班级创建试卷'}, status=status.HTTP_403_FORBIDDEN)
+        
+        # 智能抽题
+        selected_questions = []
+        
+        # 按题型+难度组合抽题
+        for qtype, count in type_distribution.items():
+            type_questions = Question.objects.filter(
+                question_type=qtype,
+                #creator=request.user
+            )
+            
+            # 如果有难度分布要求
+            if difficulty_distribution:
+                for difficulty, diff_count in difficulty_distribution.items():
+                    diff_questions = type_questions.filter(difficulty=int(difficulty))
+                    # 随机抽取指定数量
+                    diff_questions = diff_questions.order_by('?')[:diff_count]
+                    selected_questions.extend(list(diff_questions))
+            else:
+                # 没有难度分布，直接从该题型中随机抽
+                type_questions = type_questions.order_by('?')[:count]
+                selected_questions.extend(list(type_questions))
+        
+        if not selected_questions:
+            return Response({'error': '题库中没有符合条件的题目'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # 计算每题分值
+        question_count = len(selected_questions)
+        score_per_question = round(total_score / question_count, 1)
+        
+        # 创建试卷
+        paper = ExamPaper.objects.create(
+            name=name,
+            target_class=target_class,
+            total_score=total_score,
+            duration=duration,
+            creator=request.user
+        )
+        
+        # 关联题目
+        for order, question in enumerate(selected_questions):
+            ExamPaperQuestion.objects.create(
+                paper=paper,
+                question=question,
+                score=score_per_question,
+                order=order
+            )
+        
+        return Response({
+            'message': '智能组卷成功',
+            'paper': ExamPaperSerializer(paper).data,
+            'question_count': question_count,
+            'score_per_question': score_per_question
+        })
     
     @action(detail=True, methods=['get'])
     def statistics(self, request, pk=None):

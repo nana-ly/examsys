@@ -90,6 +90,31 @@ class StudentClassSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'joined_at']
 
 
+class AddStudentSerializer(serializers.Serializer):
+    """教师添加学生序列化器"""
+    student_id = serializers.IntegerField(label='学生ID')
+
+    def validate_student_id(self, value):
+        try:
+            student = User.objects.get(id=value, role='student')
+        except User.DoesNotExist:
+            raise serializers.ValidationError('学生不存在或非学生角色')
+        self._student = student
+        return value
+
+    def validate(self, attrs):
+        class_obj = self.context['class_obj']
+        if StudentClass.objects.filter(student=self._student, class_obj=class_obj).exists():
+            raise serializers.ValidationError('该学生已在班级中')
+        return attrs
+
+    def save(self):
+        return StudentClass.objects.create(
+            student=self._student,
+            class_obj=self.context['class_obj']
+        )
+
+
 class JoinClassSerializer(serializers.Serializer):
     """加入班级序列化器"""
     class_code = serializers.CharField(max_length=20, label='班级码')

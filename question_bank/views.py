@@ -2,6 +2,7 @@ from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import PermissionDenied
 from django_filters.rest_framework import DjangoFilterBackend
 
 from .models import Question
@@ -34,7 +35,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
     
     def perform_create(self, serializer):
         if self.request.user.role not in ['teacher', 'admin']:
-            raise PermissionError('只有教师或管理员才能创建题目')
+            raise PermissionDenied('只有教师或管理员才能创建题目')
         serializer.save(creator=self.request.user)
     
     @action(detail=False, methods=['get'])

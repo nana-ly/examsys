@@ -2,13 +2,14 @@ from rest_framework import viewsets, status, filters
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import PermissionDenied
 from django_filters.rest_framework import DjangoFilterBackend
 
 from .models import User, Class, StudentClass
 from .serializers import (
     UserSerializer, UserListSerializer,
     ClassSerializer, ClassCreateSerializer,
-    StudentClassSerializer, JoinClassSerializer
+    StudentClassSerializer, JoinClassSerializer, AddStudentSerializer
 )
 
 
@@ -52,7 +53,7 @@ class ClassViewSet(viewsets.ModelViewSet):
     
     def perform_create(self, serializer):
         if self.request.user.role != 'teacher':
-            raise PermissionError('只有教师才能创建班级')
+            raise PermissionDenied('只有教师才能创建班级')
         serializer.save(teacher=self.request.user)
     
     @action(detail=True, methods=['get'])
@@ -62,6 +63,26 @@ class ClassViewSet(viewsets.ModelViewSet):
         student_classes = StudentClass.objects.filter(class_obj=class_obj)
         serializer = StudentClassSerializer(student_classes, many=True)
         return Response(serializer.data)
+
+    @action(detail=True, methods=['post'])
+    def add_student(self, request, pk=None):
+        """教师直接添加学生到班级"""
+        class_obj = self.get_object()
+
+        if request.user.role != 'teacher' or class_obj.teacher != request.user:
+            return Response({'error': '无权操作该班级'}, status=status.HTTP_403_FORBIDDEN)
+
+        serializer = AddStudentSerializer(
+            data=request.data,
+            context={'class_obj': class_obj}
+        )
+        if serializer.is_valid():
+            student_class = serializer.save()
+            return Response({
+                'message': '添加成功',
+                'data': StudentClassSerializer(student_class).data
+            }, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class StudentClassViewSet(viewsets.ModelViewSet):

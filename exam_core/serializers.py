@@ -155,3 +155,43 @@ class WrongQuestionCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = WrongQuestion
         fields = ['question', 'wrong_answer']
+
+
+class AutoGenerateSerializer(serializers.Serializer):
+    name = serializers.CharField(label='试卷名称')
+    target_class = serializers.IntegerField(label='目标班级')
+    total_score = serializers.IntegerField(label='总分', default=100)
+    duration = serializers.IntegerField(label='时长(分钟)', default=120)
+    published_at = serializers.DateTimeField(label='发布时间', required=False, allow_null=True)
+
+    # 表单字段 — 用于 HTML form 逐个输入
+    choice_count = serializers.IntegerField(label='选择题数量', required=False, min_value=0)
+    true_false_count = serializers.IntegerField(label='判断题数量', required=False, min_value=0)
+    multiple_choice_count = serializers.IntegerField(label='多选题数量', required=False, min_value=0)
+    easy_count = serializers.IntegerField(label='简单题数量', required=False, min_value=0)
+    medium_count = serializers.IntegerField(label='中等题数量', required=False, min_value=0)
+    hard_count = serializers.IntegerField(label='难题数量', required=False, min_value=0)
+
+    def validate(self, attrs):
+        type_dist = {}
+        if attrs.get('choice_count'):
+            type_dist['choice'] = attrs['choice_count']
+        if attrs.get('true_false_count'):
+            type_dist['true_false'] = attrs['true_false_count']
+        if attrs.get('multiple_choice_count'):
+            type_dist['multiple_choice'] = attrs['multiple_choice_count']
+
+        if not type_dist:
+            raise serializers.ValidationError({'choice_count': '请至少指定一种题型数量'})
+
+        diff_dist = {}
+        if attrs.get('easy_count'):
+            diff_dist['1'] = attrs['easy_count']
+        if attrs.get('medium_count'):
+            diff_dist['2'] = attrs['medium_count']
+        if attrs.get('hard_count'):
+            diff_dist['3'] = attrs['hard_count']
+
+        attrs['type_distribution'] = type_dist
+        attrs['difficulty_distribution'] = diff_dist
+        return attrs

@@ -26,6 +26,7 @@ INSTALLED_APPS = [
     'users',
     'question_bank',
     'exam_core',
+    'apps.student',
 ]
 
 MIDDLEWARE = [

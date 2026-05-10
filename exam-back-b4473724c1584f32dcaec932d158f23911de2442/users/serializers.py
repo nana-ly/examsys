@@ -9,7 +9,7 @@ class UserRegisterSerializer(serializers.ModelSerializer):
     """用户注册序列化器"""
     password = serializers.CharField(write_only=True, min_length=6, label='密码')
     password_confirm = serializers.CharField(write_only=True, label='确认密码')
-    
+
     class Meta:
         model = User
         fields = ['username', 'password', 'password_confirm', 'role', 'phone', 'real_name', 'email']
@@ -18,12 +18,12 @@ class UserRegisterSerializer(serializers.ModelSerializer):
             'phone': {'required': False},
             'real_name': {'required': False},
         }
-    
+
     def validate(self, attrs):
         if attrs['password'] != attrs['password_confirm']:
             raise serializers.ValidationError({'password_confirm': '两次密码不一致'})
         return attrs
-    
+
     def create(self, validated_data):
         validated_data.pop('password_confirm')
         user = User.objects.create_user(**validated_data)
@@ -34,7 +34,7 @@ class UserLoginSerializer(serializers.Serializer):
     """用户登录序列化器"""
     username = serializers.CharField(label='用户名')
     password = serializers.CharField(label='密码', write_only=True)
-    
+
     def validate(self, attrs):
         user = authenticate(username=attrs['username'], password=attrs['password'])
         if not user:
@@ -63,7 +63,7 @@ class UserListSerializer(serializers.ModelSerializer):
 class ClassSerializer(serializers.ModelSerializer):
     """班级序列化器"""
     teacher_name = serializers.CharField(source='teacher.real_name', read_only=True)
-    
+
     class Meta:
         model = Class
         fields = ['id', 'name', 'teacher', 'teacher_name', 'class_code', 'created_at']
@@ -86,13 +86,16 @@ class ClassCreateSerializer(serializers.ModelSerializer):
 
 class StudentClassSerializer(serializers.ModelSerializer):
     """学生班级关联序列化器"""
-    student_name = serializers.CharField(source='student.real_name', read_only=True)
+    username = serializers.CharField(source='student.username', read_only=True)
+    real_name = serializers.CharField(source='student.real_name', read_only=True)
+    email = serializers.CharField(source='student.email', read_only=True)
     class_name = serializers.CharField(source='class_obj.name', read_only=True)
-    
+    join_time = serializers.DateTimeField(source='joined_at', read_only=True)
+
     class Meta:
         model = StudentClass
-        fields = ['id', 'student', 'student_name', 'class_obj', 'class_name', 'joined_at']
-        read_only_fields = ['id', 'joined_at']
+        fields = ['id', 'student', 'username', 'real_name', 'email', 'class_obj', 'class_name', 'join_time']
+        read_only_fields = ['id', 'join_time']
 
 
 class AddStudentSerializer(serializers.Serializer):
@@ -125,7 +128,7 @@ class AddStudentSerializer(serializers.Serializer):
 class JoinClassSerializer(serializers.Serializer):
     """加入班级序列化器"""
     class_code = serializers.CharField(max_length=20, label='班级码')
-    
+
     def validate_class_code(self, value):
         try:
             class_obj = Class.objects.get(class_code=value)
@@ -133,7 +136,7 @@ class JoinClassSerializer(serializers.Serializer):
             raise serializers.ValidationError('班级码不存在')
         self._class_obj = class_obj
         return value
-    
+
     def validate(self, attrs):
         user = self.context['request'].user
         if user.role != 'student':
@@ -142,7 +145,7 @@ class JoinClassSerializer(serializers.Serializer):
             raise serializers.ValidationError('您已经加入过该班级')
         attrs['class_obj'] = self._class_obj
         return attrs
-    
+
     def save(self):
         return StudentClass.objects.create(
             student=self.context['request'].user,

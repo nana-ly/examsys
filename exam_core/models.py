@@ -93,6 +93,7 @@ class ExamRecord(models.Model):
     status = models.CharField('状态', max_length=20, choices=STATUS_CHOICES, default='ongoing')
     started_at = models.DateTimeField('开始时间', auto_now_add=True)
     submitted_at = models.DateTimeField('提交时间', null=True, blank=True)
+    tab_switch_count = models.IntegerField('切屏次数', default=0)
     
     class Meta:
         db_table = 'exam_records'

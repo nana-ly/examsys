@@ -84,5 +84,5 @@ class QuestionViewSet(viewsets.ModelViewSet):
             'content': question.content[:50],
             'question_type': question.get_question_type_display(),
             'difficulty': question.get_difficulty_display(),
-            'usage_count': question.exampaperquestion_set.count(),
+            'usage_count': question.question_papers.count(),
         })

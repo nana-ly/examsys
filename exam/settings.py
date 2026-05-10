@@ -2,6 +2,7 @@
 Django settings for exam project.
 """
 
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -109,3 +110,6 @@ REST_FRAMEWORK = {
 
 # CORS settings
 CORS_ALLOW_ALL_ORIGINS = True
+
+# Zhipu AI API Key
+ZHIPU_API_KEY = os.environ.get('ZHIPU_API_KEY', '2b41adce08b540f9b9203b161ac550f5.0x2EeGc6rETQMq51')

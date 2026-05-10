@@ -37,7 +37,7 @@ class ExamPaper(models.Model):
     
     @property
     def question_count(self):
-        return self.exampaperquestion_set.count()
+        return self.paper_questions.count()
 
 
 class ExamPaperQuestion(models.Model):

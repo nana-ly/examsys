@@ -6,7 +6,7 @@ from rest_framework.exceptions import PermissionDenied
 from django.utils import timezone
 from django.db.models import Sum, Avg, Count, Max, Min, Q
 
-from users.models import Class
+from users.models import Class, StudentClass
 from question_bank.models import Question
 from .models import ExamPaper, ExamPaperQuestion, ExamRecord, AnswerDetail, WrongQuestion
 from .serializers import (
@@ -55,25 +55,57 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
         if self.request.user.role not in ['teacher', 'admin']:
             raise PermissionDenied('只有教师或管理员才能创建试卷')
         serializer.save(creator=self.request.user)
+
+    def perform_update(self, serializer):
+        if self.request.user.role not in ['teacher', 'admin']:
+            raise PermissionDenied('只有教师或管理员才能修改试卷')
+        if self.request.user.role == 'teacher' and self.get_object().creator != self.request.user:
+            raise PermissionDenied('只能修改自己的试卷')
+        if self.get_object().published_at:
+            raise PermissionDenied('已发布的试卷不能修改')
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        if self.request.user.role not in ['teacher', 'admin']:
+            raise PermissionDenied('只有教师或管理员才能删除试卷')
+        if self.request.user.role == 'teacher' and instance.creator != self.request.user:
+            raise PermissionDenied('只能删除自己的试卷')
+        instance.delete()
     
+    def _check_paper_owner(self, paper):
+        """检查是否为试卷创建者，否则抛出 403"""
+        if self.request.user.role == 'admin':
+            return
+        if paper.creator != self.request.user:
+            raise PermissionDenied('无权操作该试卷')
+
     @action(detail=True, methods=['get'])
     def questions(self, request, pk=None):
         """获取试卷题目列表"""
         paper = self.get_object()
+        user = request.user
+        if user.role == 'teacher':
+            self._check_paper_owner(paper)
+        elif user.role == 'student':
+            if not paper.published_at or paper.published_at > timezone.now():
+                return Response({'error': '试卷未发布'}, status=status.HTTP_403_FORBIDDEN)
         questions = ExamPaperQuestion.objects.filter(paper=paper).order_by('order')
         serializer = ExamPaperQuestionSerializer(questions, many=True)
         return Response(serializer.data)
-    
+
     @action(detail=True, methods=['post'])
     def add_question(self, request, pk=None):
         """向试卷添加题目"""
         paper = self.get_object()
+        self._check_paper_owner(paper)
+        if paper.published_at:
+            return Response({'error': '已发布的试卷不能修改'}, status=status.HTTP_400_BAD_REQUEST)
         question_id = request.data.get('question_id')
         score = request.data.get('score', 10)
-        
+
         try:
             question = Question.objects.get(id=question_id)
-            order = paper.exampaperquestion_set.count()
+            order = paper.paper_questions.count()
             paper_question, created = ExamPaperQuestion.objects.get_or_create(
                 paper=paper,
                 question=question,
@@ -84,22 +116,24 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
             return Response({'message': '添加成功'})
         except Question.DoesNotExist:
             return Response({'error': '题目不存在'}, status=status.HTTP_404_NOT_FOUND)
-    
+
     @action(detail=True, methods=['delete'], url_path='remove_question/(?P<question_id>[^/.]+)')
     def remove_question(self, request, pk=None, question_id=None):
         """从试卷移除题目"""
         paper = self.get_object()
+        self._check_paper_owner(paper)
         try:
             paper_question = ExamPaperQuestion.objects.get(paper=paper, question_id=question_id)
             paper_question.delete()
             return Response({'message': '移除成功'})
         except ExamPaperQuestion.DoesNotExist:
             return Response({'error': '题目不在试卷中'}, status=status.HTTP_404_NOT_FOUND)
-    
+
     @action(detail=True, methods=['post'])
     def publish(self, request, pk=None):
         """发布试卷"""
         paper = self.get_object()
+        self._check_paper_owner(paper)
         if paper.published_at:
             return Response({'error': '试卷已发布'}, status=status.HTTP_400_BAD_REQUEST)
         paper.published_at = timezone.now()
@@ -145,7 +179,7 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
                 return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
             vd = serializer.validated_data
             name = vd['name']
-            target_class_id = vd['target_class']
+            target_class_id = vd['target_class'].id  # PrimaryKeyRelatedField 返回对象
             total_score = vd.get('total_score', 100)
             duration = vd.get('duration', 120)
             type_distribution = vd['type_distribution']
@@ -251,6 +285,7 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
     def statistics(self, request, pk=None):
         """获取试卷统计信息"""
         paper = self.get_object()
+        self._check_paper_owner(paper)
         records = ExamRecord.objects.filter(paper=paper, status='submitted')
 
         stats = {
@@ -278,6 +313,10 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
 
         user = request.user
         if user.role == 'teacher' and target_class.teacher != user:
+            return Response({'error': '无权查看该班级'}, status=status.HTTP_403_FORBIDDEN)
+        if user.role == 'student' and not StudentClass.objects.filter(
+            student=user, class_obj=target_class
+        ).exists():
             return Response({'error': '无权查看该班级'}, status=status.HTTP_403_FORBIDDEN)
 
         papers = ExamPaper.objects.filter(target_class=target_class)
@@ -345,6 +384,7 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
     def question_accuracy(self, request, pk=None):
         """各题正确率统计"""
         paper = self.get_object()
+        self._check_paper_owner(paper)
         paper_questions = ExamPaperQuestion.objects.filter(paper=paper).order_by('order')
 
         question_stats = []
@@ -415,7 +455,10 @@ class ExamRecordViewSet(viewsets.ModelViewSet):
             paper = ExamPaper.objects.get(id=paper_id)
         except ExamPaper.DoesNotExist:
             return Response({'error': '试卷不存在'}, status=status.HTTP_404_NOT_FOUND)
-        
+
+        if not paper.published_at or paper.published_at > timezone.now():
+            return Response({'error': '试卷未发布'}, status=status.HTTP_400_BAD_REQUEST)
+
         # 检查是否已有考试记录
         record, created = ExamRecord.objects.get_or_create(
             student=user,

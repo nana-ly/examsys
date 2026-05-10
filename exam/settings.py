@@ -64,10 +64,14 @@ DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
         'NAME': 'exam_db',
-        'USER': 'root',
-        'PASSWORD': 'root1234',
-        'HOST': '10.190.197.81',
+        'USER': 'exam_user',
+        'PASSWORD': 'MyProject123!',
+        'HOST': 'rm-cn-qnv4s01f40001g4o.rwlb.rds.aliyuncs.com',
         'PORT': '3306',
+        'OPTIONS': {
+            'charset': 'utf8mb4',
+            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+        },
     }
 }
 

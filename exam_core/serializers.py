@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import ExamPaper, ExamPaperQuestion, ExamRecord, AnswerDetail, WrongQuestion
+from question_bank.models import Question
 from question_bank.serializers import QuestionSerializer
 from users.models import Class
 
@@ -51,34 +52,59 @@ class ExamPaperCreateSerializer(serializers.ModelSerializer):
         required=False,
         help_text='题目ID列表'
     )
-    
+
     class Meta:
         model = ExamPaper
         fields = ['name', 'target_class', 'total_score', 'duration', 'published_at', 'question_ids']
-    
+
+    def to_internal_value(self, data):
+        data = dict(data)
+        if 'title' in data and 'name' not in data:
+            data['name'] = data.pop('title')
+        if 'classIds' in data and 'target_class' not in data:
+            class_ids = data.pop('classIds')
+            if isinstance(class_ids, list) and class_ids:
+                data['target_class'] = class_ids[0]
+        if 'totalScore' in data and 'total_score' not in data:
+            data['total_score'] = data.pop('totalScore')
+        if 'startTime' in data and 'published_at' not in data:
+            data['published_at'] = data.pop('startTime')
+        if 'questions' in data and 'question_ids' not in data:
+            questions = data.pop('questions')
+            data['question_ids'] = [q['question_id'] if isinstance(q, dict) else q for q in questions]
+            self._question_scores = {q['question_id']: q.get('score', 10)
+                                     for q in questions if isinstance(q, dict)}
+        else:
+            self._question_scores = {}
+        data.pop('description', None)
+        data.pop('endTime', None)
+        data.pop('passScore', None)
+        return super().to_internal_value(data)
+
     def validate_target_class(self, value):
         user = self.context['request'].user
         if value.teacher != user:
             raise serializers.ValidationError('只能为自己的班级创建试卷')
         return value
-    
+
     def create(self, validated_data):
         question_ids = validated_data.pop('question_ids', [])
         validated_data['creator'] = self.context['request'].user
         paper = ExamPaper.objects.create(**validated_data)
-        
-        # 添加题目到试卷
+
         for order, qid in enumerate(question_ids):
             try:
                 question = Question.objects.get(id=qid)
+                score = self._question_scores.get(qid, 10)
                 ExamPaperQuestion.objects.create(
                     paper=paper,
                     question=question,
+                    score=score,
                     order=order
                 )
             except Question.DoesNotExist:
                 pass
-        
+
         return paper
 
 

@@ -7,9 +7,8 @@ from django.conf import settings
 import json
 import requests
 
-from exam_core.models import ExamPaper, ExamPaperQuestion
+from exam_core.models import ExamPaper, ExamPaperQuestion, ExamRecord, AnswerDetail, WrongQuestion
 from question_bank.models import Question
-from .models import ExamRecord, AnswerDetail, WrongQuestion
 from .serializers import ExamListSerializer, ExamDetailSerializer, WrongQuestionSerializer
 
 
@@ -140,7 +139,7 @@ class SubmitAnswerView(APIView):
                 is_correct = str(student_answer).strip() == str(question.answer).strip()
 
                 AnswerDetail.objects.create(
-                    exam_record=exam_record,
+                    record=exam_record,
                     question=question,
                     student_answer=str(student_answer),
                     is_correct=is_correct
@@ -183,7 +182,7 @@ class WrongQuestionListView(APIView):
         if knowledge_point:
             queryset = queryset.filter(question__knowledge_point=knowledge_point)
 
-        queryset = queryset.order_by('-added_at')
+        queryset = queryset.order_by('-created_at')
 
         serializer = WrongQuestionSerializer(queryset, many=True)
         return Response(serializer.data)
@@ -451,7 +450,7 @@ class StartExamView(APIView):
         # 3. 检查是否已有进行中的考试记录（避免重复创建）
         existing_record = ExamRecord.objects.filter(
             student=request.user,
-            exam_paper=exam,
+            paper=exam,
             status='ongoing'
         ).first()
         
@@ -464,7 +463,7 @@ class StartExamView(APIView):
         # 4. 创建 ExamRecord，status='ongoing'
         exam_record = ExamRecord.objects.create(
             student=request.user,
-            exam_paper=exam,
+            paper=exam,
             status='ongoing'
         )
         

@@ -3,6 +3,7 @@ from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.contrib.auth import login, logout
+from django.middleware.csrf import get_token
 
 from users.models import User
 from users.serializers import (
@@ -42,7 +43,8 @@ class AuthViewSet(viewsets.GenericViewSet):
             login(request, user)
             return Response({
                 'message': '登录成功',
-                'user': UserSerializer(user).data
+                'user': UserSerializer(user).data,
+                'csrfToken': get_token(request)
             })
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     

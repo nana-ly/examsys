@@ -79,12 +79,28 @@ class ClassViewSet(viewsets.ModelViewSet):
             context={'class_obj': class_obj}
         )
         if serializer.is_valid():
-            student_class = serializer.save()
+            student_classes = serializer.save()
             return Response({
                 'message': '添加成功',
-                'data': StudentClassSerializer(student_class).data
+                'data': StudentClassSerializer(student_classes, many=True).data
             }, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    @action(detail=True, methods=['post'])
+    def remove_student(self, request, pk=None):
+        """从班级移除学生"""
+        class_obj = self.get_object()
+        if request.user.role == 'admin':
+            pass
+        elif request.user.role != 'teacher' or class_obj.teacher != request.user:
+            return Response({'error': '无权操作该班级'}, status=status.HTTP_403_FORBIDDEN)
+        student_id = request.data.get('student_id')
+        try:
+            student_class = StudentClass.objects.get(class_obj=class_obj, student_id=student_id)
+            student_class.delete()
+            return Response({'message': '移除成功'})
+        except StudentClass.DoesNotExist:
+            return Response({'error': '学生不在该班级中'}, status=status.HTTP_404_NOT_FOUND)
 
 
 class StudentClassViewSet(viewsets.ModelViewSet):

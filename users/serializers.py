@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from rest_framework import serializers
 from django.contrib.auth import authenticate
 from .models import User, Class, StudentClass
@@ -73,46 +75,54 @@ class ClassCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Class
         fields = ['name', 'class_code']
-    
+        extra_kwargs = {'class_code': {'required': False}}
+
     def create(self, validated_data):
         validated_data['teacher'] = self.context['request'].user
+        if not validated_data.get('class_code'):
+            validated_data['class_code'] = f"C{validated_data['teacher'].id}{int(datetime.now().timestamp())}"
         return super().create(validated_data)
 
 
 class StudentClassSerializer(serializers.ModelSerializer):
     """学生班级关联序列化器"""
-    student_name = serializers.CharField(source='student.real_name', read_only=True)
+    username = serializers.CharField(source='student.username', read_only=True)
+    real_name = serializers.CharField(source='student.real_name', read_only=True)
+    email = serializers.CharField(source='student.email', read_only=True)
     class_name = serializers.CharField(source='class_obj.name', read_only=True)
-    
+    join_time = serializers.DateTimeField(source='joined_at', read_only=True)
+
     class Meta:
         model = StudentClass
-        fields = ['id', 'student', 'student_name', 'class_obj', 'class_name', 'joined_at']
-        read_only_fields = ['id', 'joined_at']
+        fields = ['id', 'student', 'username', 'real_name', 'email', 'class_obj', 'class_name', 'join_time']
+        read_only_fields = ['id', 'join_time']
 
 
 class AddStudentSerializer(serializers.Serializer):
     """教师添加学生序列化器"""
-    student_id = serializers.IntegerField(label='学生ID')
+    student_ids = serializers.ListField(child=serializers.IntegerField(), label='学生ID列表')
 
-    def validate_student_id(self, value):
-        try:
-            student = User.objects.get(id=value, role='student')
-        except User.DoesNotExist:
-            raise serializers.ValidationError('学生不存在或非学生角色')
-        self._student = student
+    def validate_student_ids(self, value):
+        students = []
+        for sid in value:
+            try:
+                student = User.objects.get(id=sid, role='student')
+                students.append(student)
+            except User.DoesNotExist:
+                raise serializers.ValidationError(f'学生ID {sid} 不存在或非学生角色')
+        self._students = students
         return value
 
     def validate(self, attrs):
         class_obj = self.context['class_obj']
-        if StudentClass.objects.filter(student=self._student, class_obj=class_obj).exists():
-            raise serializers.ValidationError('该学生已在班级中')
+        for student in self._students:
+            if StudentClass.objects.filter(student=student, class_obj=class_obj).exists():
+                raise serializers.ValidationError(f'学生 {student.real_name} 已在班级中')
         return attrs
 
     def save(self):
-        return StudentClass.objects.create(
-            student=self._student,
-            class_obj=self.context['class_obj']
-        )
+        class_obj = self.context['class_obj']
+        return [StudentClass.objects.create(student=s, class_obj=class_obj) for s in self._students]
 
 
 class JoinClassSerializer(serializers.Serializer):

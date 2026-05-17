@@ -5,19 +5,30 @@ base_url = "http://127.0.0.1:8000"
 
 session = requests.Session()
 
-# 1. 先获取 CSRF Token
-session.get(f"{base_url}/api/users/auth/login/")
-csrf_token = session.cookies.get('csrftoken')
+# 1. 注册一个测试教师账号
+register_data = {
+    "username": "admin",
+    "password": "admin123",
+    "password_confirm": "admin123",
+    "role": "teacher",
+    "real_name": "测试教师"
+}
+r = session.post(f"{base_url}/api/users/auth/register/", json=register_data)
+print("注册状态:", r.status_code, r.json())
+
+# 2. 获取 CSRF Token
+r = session.get(f"{base_url}/api/users/csrf/")
+csrf_token = r.json().get('csrfToken') or session.cookies.get('csrftoken')
 print("CSRF Token:", csrf_token)
 
-# 2. 登录（带上 CSRF Token）
+# 3. 登录
 login_data = {
     "username": "admin",
     "password": "admin123"
 }
 
 headers = {
-    'X-CSRFToken': csrf_token,
+    'X-CSRFToken': csrf_token or '',
     'Content-Type': 'application/json'
 }
 
@@ -25,9 +36,9 @@ login_response = session.post(f"{base_url}/api/users/auth/login/", json=login_da
 print("登录状态:", login_response.status_code)
 print("登录返回:", login_response.text)
 
-# 3. 测试智能组卷（带上新的 CSRF Token）
+# 4. 测试智能组卷（带上新的 CSRF Token）
 csrf_token = session.cookies.get('csrftoken', csrf_token)
-headers['X-CSRFToken'] = csrf_token
+headers['X-CSRFToken'] = csrf_token or ''
 
 url = f"{base_url}/api/exam/papers/auto_generate/"
 

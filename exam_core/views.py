@@ -39,10 +39,8 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
         queryset = super().get_queryset()
         
         if user.role == 'teacher':
-            # 教师查看自己创建的试卷
             queryset = queryset.filter(creator=user)
         elif user.role == 'student':
-            # 学生查看已发布且班级匹配的试卷
             queryset = queryset.filter(
                 published_at__isnull=False,
                 published_at__lte=timezone.now(),
@@ -140,8 +138,6 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
         paper.save()
         return Response({'message': '发布成功', 'published_at': paper.published_at})
     
-
-
     @action(detail=False, methods=['post'], serializer_class=AutoGenerateSerializer)
     def auto_generate(self, request):
         """智能组卷：按难度/题型比例自动抽题"""
@@ -211,7 +207,6 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
         targets = {}
         for qtype, type_count in type_counts.items():
             if diff_counts:
-                # 将 type_count 按难度比例分配
                 allocated = 0
                 diffs = sorted(diff_counts.keys())
                 for idx, diff in enumerate(diffs):
@@ -280,7 +275,6 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
             'score_per_question': score_per_question
         })
     
-
     @action(detail=True, methods=['get'])
     def statistics(self, request, pk=None):
         """获取试卷统计信息"""
@@ -508,7 +502,6 @@ class ExamRecordViewSet(viewsets.ModelViewSet):
                 score = 0
                 
                 if is_correct:
-                    # 获取该题分值
                     paper_question = ExamPaperQuestion.objects.get(
                         paper=record.paper,
                         question=question
@@ -576,6 +569,74 @@ class ExamRecordViewSet(viewsets.ModelViewSet):
             'record': ExamRecordSerializer(record).data,
             'answers': serializer.data
         })
+
+    @action(detail=False, methods=['get'])
+    def statistics(self, request):
+        """成绩统计"""
+        class_id = request.query_params.get('class_id')
+        exam_id = request.query_params.get('exam_id')
+        queryset = self.get_queryset().filter(status='submitted')
+        
+        if class_id:
+            queryset = queryset.filter(paper__target_class_id=class_id)
+        if exam_id:
+            queryset = queryset.filter(paper_id=exam_id)
+
+        agg = queryset.aggregate(
+            avg_score=Avg('score'), max_score=Max('score'),
+            min_score=Min('score'), total=Count('id')
+        )
+        stats = {
+            'total': agg['total'],
+            'average_score': float(agg['avg_score'] or 0),
+            'highest_score': float(agg['max_score'] or 0),
+            'lowest_score': float(agg['min_score'] or 0),
+            'pass_count': queryset.filter(score__gte=60).count(),
+        }
+        score_ranges = [
+            {'range': '0-59', 'label': '不及格', 'min': 0, 'max': 59},
+            {'range': '60-69', 'label': '及格', 'min': 60, 'max': 69},
+            {'range': '70-79', 'label': '中等', 'min': 70, 'max': 79},
+            {'range': '80-89', 'label': '良好', 'min': 80, 'max': 89},
+            {'range': '90-100', 'label': '优秀', 'min': 90, 'max': 100},
+        ]
+        distribution = []
+        for sr in score_ranges:
+            cnt = queryset.filter(score__gte=sr['min'], score__lte=sr['max']).count()
+            distribution.append({
+                'range': sr['range'], 'label': sr['label'], 'count': cnt,
+                'ratio': round(cnt / agg['total'] * 100, 1) if agg['total'] else 0,
+            })
+        return Response({
+            'statistics': stats,
+            'distribution': distribution,
+            'accuracy': [],
+            'trend': [],
+        })
+
+    @action(detail=False, methods=['get'])
+    def export(self, request):
+        """导出成绩为CSV"""
+        import csv
+        from django.http import HttpResponse
+        
+        class_id = request.query_params.get('class_id')
+        exam_id = request.query_params.get('exam_id')
+        queryset = self.get_queryset().filter(status='submitted')
+        
+        if class_id:
+            queryset = queryset.filter(paper__target_class_id=class_id)
+        if exam_id:
+            queryset = queryset.filter(paper_id=exam_id)
+
+        response = HttpResponse(content_type='text/csv; charset=utf-8-sig')
+        response['Content-Disposition'] = 'attachment; filename="scores.csv"'
+        writer = csv.writer(response)
+        writer.writerow(['学生', '试卷', '分数', '提交时间'])
+        
+        for record in queryset.select_related('student', 'paper'):
+            writer.writerow([record.student.username, record.paper.name, record.score, record.submitted_at])
+        return response
 
 
 class WrongQuestionViewSet(viewsets.ModelViewSet):

@@ -54,6 +54,32 @@ class QuestionListSerializer(serializers.ModelSerializer):
 class QuestionCreateSerializer(serializers.ModelSerializer):
     """创建题目序列化器"""
     options = serializers.CharField(required=False, allow_blank=True)
+
+    TYPE_MAP = {
+        'single': 'choice',
+        'multiple': 'multiple_choice',
+        'judge': 'true_false',
+        'blank': 'fill_blank',
+        'essay': 'essay',
+    }
+    DIFFICULTY_MAP = {'easy': 1, 'medium': 3, 'hard': 5}
+
+    def to_internal_value(self, data):
+        data = dict(data)
+        # Map frontend field names to backend field names
+        if 'type' in data and 'question_type' not in data:
+            frontend_type = data.pop('type')
+            data['question_type'] = self.TYPE_MAP.get(frontend_type, frontend_type)
+        if 'explanation' in data and 'analysis' not in data:
+            data['analysis'] = data.pop('explanation')
+        if 'difficulty' in data and isinstance(data['difficulty'], str):
+            data['difficulty'] = self.DIFFICULTY_MAP.get(data['difficulty'], data['difficulty'])
+        # Convert options array of {key, value} to JSON string
+        if 'options' in data and isinstance(data['options'], list):
+            data['options'] = json.dumps({o['key']: o['value'] for o in data['options']})
+        # Remove fields not in the model
+        data.pop('score', None)
+        return super().to_internal_value(data)
     
     def validate(self, attrs):
         question_type = attrs.get('question_type')

@@ -37,7 +37,12 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         queryset = super().get_queryset()
-        
+
+        # 支持按班级过滤
+        class_id = self.request.query_params.get('class_id')
+        if class_id:
+            queryset = queryset.filter(target_class_id=class_id)
+
         if user.role == 'teacher':
             queryset = queryset.filter(creator=user)
         elif user.role == 'student':
@@ -46,9 +51,9 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
                 published_at__lte=timezone.now(),
                 target_class__class_students__student=user
             ).distinct()
-        
+
         return queryset
-    
+
     def perform_create(self, serializer):
         if self.request.user.role not in ['teacher', 'admin']:
             raise PermissionDenied('只有教师或管理员才能创建试卷')
@@ -167,7 +172,12 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
             name = data.get('name')
             target_class_id = data.get('target_class')
             total_score = int(data.get('total_score', 100) or 100)
+            pass_score = int(data.get('pass_score', 60) or 60)
             duration = int(data.get('duration', 120) or 120)
+            end_time = data.get('end_time')
+            if end_time and isinstance(end_time, str):
+                from django.utils.dateparse import parse_datetime
+                end_time = parse_datetime(end_time)
         else:
             # HTML 表单路径 — 用序列化器校验
             serializer = AutoGenerateSerializer(data=data)
@@ -177,7 +187,9 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
             name = vd['name']
             target_class_id = vd['target_class'].id  # PrimaryKeyRelatedField 返回对象
             total_score = vd.get('total_score', 100)
+            pass_score = vd.get('pass_score', 60)
             duration = vd.get('duration', 120)
+            end_time = vd.get('end_time')
             type_distribution = vd['type_distribution']
             difficulty_distribution = vd.get('difficulty_distribution', {})
 
@@ -256,7 +268,9 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
             name=name,
             target_class=target_class,
             total_score=total_score,
+            pass_score=pass_score,
             duration=duration,
+            end_time=end_time,
             creator=request.user
         )
 
@@ -424,12 +438,22 @@ class ExamRecordViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         queryset = super().get_queryset()
-        
+
+        # 支持按班级过滤
+        class_id = self.request.query_params.get('class_id')
+        if class_id:
+            queryset = queryset.filter(paper__target_class_id=class_id)
+
+        # 支持按试卷过滤
+        exam_id = self.request.query_params.get('exam_id')
+        if exam_id:
+            queryset = queryset.filter(paper_id=exam_id)
+
         if user.role == 'student':
             queryset = queryset.filter(student=user)
         elif user.role == 'teacher':
             queryset = queryset.filter(paper__creator=user)
-        
+
         return queryset
     
     @action(detail=False, methods=['post'])
@@ -572,46 +596,103 @@ class ExamRecordViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['get'])
     def statistics(self, request):
-        """成绩统计"""
-        class_id = request.query_params.get('class_id')
+        """成绩统计 — 汇总统计、成绩分布、各题正确率、历次趋势"""
         exam_id = request.query_params.get('exam_id')
+        class_id = request.query_params.get('class_id')
         queryset = self.get_queryset().filter(status='submitted')
-        
-        if class_id:
-            queryset = queryset.filter(paper__target_class_id=class_id)
-        if exam_id:
-            queryset = queryset.filter(paper_id=exam_id)
 
         agg = queryset.aggregate(
             avg_score=Avg('score'), max_score=Max('score'),
-            min_score=Min('score'), total=Count('id')
+            min_score=Min('score'), total=Count('id'),
+            total_students=Count('student', distinct=True),
         )
         stats = {
             'total': agg['total'],
+            'total_students': agg['total_students'],
             'average_score': float(agg['avg_score'] or 0),
             'highest_score': float(agg['max_score'] or 0),
             'lowest_score': float(agg['min_score'] or 0),
             'pass_count': queryset.filter(score__gte=60).count(),
         }
+
+        # 成绩分布（饼图格式 { name, value }）
         score_ranges = [
-            {'range': '0-59', 'label': '不及格', 'min': 0, 'max': 59},
-            {'range': '60-69', 'label': '及格', 'min': 60, 'max': 69},
-            {'range': '70-79', 'label': '中等', 'min': 70, 'max': 79},
-            {'range': '80-89', 'label': '良好', 'min': 80, 'max': 89},
-            {'range': '90-100', 'label': '优秀', 'min': 90, 'max': 100},
+            ('不及格(0-59)', 0, 59),
+            ('及格(60-69)', 60, 69),
+            ('中等(70-79)', 70, 79),
+            ('良好(80-89)', 80, 89),
+            ('优秀(90-100)', 90, 100),
         ]
         distribution = []
-        for sr in score_ranges:
-            cnt = queryset.filter(score__gte=sr['min'], score__lte=sr['max']).count()
-            distribution.append({
-                'range': sr['range'], 'label': sr['label'], 'count': cnt,
-                'ratio': round(cnt / agg['total'] * 100, 1) if agg['total'] else 0,
-            })
+        for name, lo, hi in score_ranges:
+            cnt = queryset.filter(score__gte=lo, score__lte=hi).count()
+            distribution.append({'name': name, 'value': cnt})
+
+        # 各题正确率（柱状图格式 { questionNum, accuracy }）
+        accuracy = []
+        if exam_id:
+            paper_questions = ExamPaperQuestion.objects.filter(
+                paper_id=exam_id
+            ).select_related('question').order_by('order')
+            for idx, pq in enumerate(paper_questions, 1):
+                answers = AnswerDetail.objects.filter(
+                    record__in=queryset, question=pq.question
+                )
+                total = answers.count()
+                correct = answers.filter(is_correct=True).count()
+                accuracy.append({
+                    'questionNum': idx,
+                    'accuracy': round(correct / total * 100, 1) if total > 0 else 0,
+                })
+        elif class_id or not exam_id:
+            question_ids = AnswerDetail.objects.filter(
+                record__in=queryset
+            ).values_list('question_id', flat=True).distinct()
+            for idx, qid in enumerate(question_ids, 1):
+                answers = AnswerDetail.objects.filter(
+                    record__in=queryset, question_id=qid
+                )
+                total = answers.count()
+                correct = answers.filter(is_correct=True).count()
+                accuracy.append({
+                    'questionNum': idx,
+                    'accuracy': round(correct / total * 100, 1) if total > 0 else 0,
+                })
+
+        # 历次成绩趋势（折线图格式 { examTitle, avgScore, maxScore, minScore }）
+        trend = []
+        if exam_id:
+            from django.db.models.functions import TruncDate
+            daily = queryset.annotate(day=TruncDate('submitted_at')).values('day').annotate(
+                avg_score=Avg('score'), max_score=Max('score'), min_score=Min('score')
+            ).order_by('day')
+            for d in daily:
+                trend.append({
+                    'examTitle': str(d['day']),
+                    'avgScore': round(float(d['avg_score'] or 0), 1),
+                    'maxScore': round(float(d['max_score'] or 0), 1),
+                    'minScore': round(float(d['min_score'] or 0), 1),
+                })
+        else:
+            paper_ids = queryset.values_list('paper_id', flat=True).distinct()
+            for pid in paper_ids:
+                prs = queryset.filter(paper_id=pid)
+                paper_agg = prs.aggregate(
+                    avg_score=Avg('score'), max_score=Max('score'), min_score=Min('score')
+                )
+                paper_name = prs.first().paper.name if prs.exists() else f'试卷{pid}'
+                trend.append({
+                    'examTitle': paper_name,
+                    'avgScore': round(float(paper_agg['avg_score'] or 0), 1),
+                    'maxScore': round(float(paper_agg['max_score'] or 0), 1),
+                    'minScore': round(float(paper_agg['min_score'] or 0), 1),
+                })
+
         return Response({
             'statistics': stats,
             'distribution': distribution,
-            'accuracy': [],
-            'trend': [],
+            'accuracy': accuracy,
+            'trend': trend,
         })
 
     @action(detail=False, methods=['get'])
@@ -619,15 +700,8 @@ class ExamRecordViewSet(viewsets.ModelViewSet):
         """导出成绩为CSV"""
         import csv
         from django.http import HttpResponse
-        
-        class_id = request.query_params.get('class_id')
-        exam_id = request.query_params.get('exam_id')
+
         queryset = self.get_queryset().filter(status='submitted')
-        
-        if class_id:
-            queryset = queryset.filter(paper__target_class_id=class_id)
-        if exam_id:
-            queryset = queryset.filter(paper_id=exam_id)
 
         response = HttpResponse(content_type='text/csv; charset=utf-8-sig')
         response['Content-Disposition'] = 'attachment; filename="scores.csv"'

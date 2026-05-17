@@ -19,13 +19,14 @@ class ExamPaperSerializer(serializers.ModelSerializer):
     target_class_name = serializers.CharField(source='target_class.name', read_only=True)
     creator_name = serializers.CharField(source='creator.real_name', read_only=True)
     question_count = serializers.IntegerField(read_only=True)
-    
+    pass_score = serializers.DecimalField(max_digits=5, decimal_places=1, default=60)
+
     class Meta:
         model = ExamPaper
         fields = [
             'id', 'name', 'target_class', 'target_class_name', 'total_score',
-            'duration', 'published_at', 'creator', 'creator_name',
-            'question_count', 'created_at', 'updated_at'
+            'pass_score', 'duration', 'end_time', 'published_at', 'creator',
+            'creator_name', 'question_count', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'creator', 'created_at', 'updated_at']
 
@@ -34,13 +35,14 @@ class ExamPaperListSerializer(serializers.ModelSerializer):
     """试卷列表序列化器"""
     target_class_name = serializers.CharField(source='target_class.name', read_only=True)
     creator_name = serializers.CharField(source='creator.real_name', read_only=True)
-    
+    pass_score = serializers.DecimalField(max_digits=5, decimal_places=1, default=60)
+
     class Meta:
         model = ExamPaper
         fields = [
             'id', 'name', 'target_class_name', 'total_score',
-            'duration', 'published_at', 'creator_name',
-            'question_count', 'created_at'
+            'pass_score', 'duration', 'end_time', 'published_at',
+            'creator_name', 'question_count', 'created_at'
         ]
 
 
@@ -55,7 +57,7 @@ class ExamPaperCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ExamPaper
-        fields = ['name', 'target_class', 'total_score', 'duration', 'published_at', 'question_ids']
+        fields = ['name', 'target_class', 'total_score', 'pass_score', 'duration', 'end_time', 'published_at', 'question_ids']
 
     def to_internal_value(self, data):
         data = dict(data)
@@ -76,9 +78,11 @@ class ExamPaperCreateSerializer(serializers.ModelSerializer):
                                      for q in questions if isinstance(q, dict)}
         else:
             self._question_scores = {}
+        if 'endTime' in data and 'end_time' not in data:
+            data['end_time'] = data.pop('endTime')
+        if 'passScore' in data and 'pass_score' not in data:
+            data['pass_score'] = data.pop('passScore')
         data.pop('description', None)
-        data.pop('endTime', None)
-        data.pop('passScore', None)
         return super().to_internal_value(data)
 
     def validate_target_class(self, value):
@@ -121,12 +125,13 @@ class ExamRecordSerializer(serializers.ModelSerializer):
     """考试记录序列化器"""
     paper_name = serializers.CharField(source='paper.name', read_only=True)
     student_name = serializers.CharField(source='student.real_name', read_only=True)
-    
+    class_name = serializers.CharField(source='paper.target_class.name', read_only=True)
+
     class Meta:
         model = ExamRecord
         fields = [
             'id', 'student', 'student_name', 'paper', 'paper_name',
-            'score', 'status', 'started_at', 'submitted_at'
+            'class_name', 'score', 'status', 'started_at', 'submitted_at'
         ]
         read_only_fields = ['id', 'started_at']
 
@@ -190,7 +195,9 @@ class AutoGenerateSerializer(serializers.Serializer):
         queryset=Class.objects.all(),
     )
     total_score = serializers.IntegerField(label='总分', default=100)
+    pass_score = serializers.IntegerField(label='及格分', default=60)
     duration = serializers.IntegerField(label='时长(分钟)', default=120)
+    end_time = serializers.DateTimeField(label='结束时间', required=False, allow_null=True)
     published_at = serializers.DateTimeField(label='发布时间', required=False, allow_null=True)
 
     # 表单字段 — 用于 HTML form 逐个输入

@@ -3,9 +3,11 @@ from rest_framework.response import Response
 from django.utils import timezone
 from django.http import Http404
 from django.db import transaction
+from django.db.models import Count
 from django.conf import settings
 import json
 import requests
+import random
 
 from exam_core.models import ExamPaper, ExamPaperQuestion, ExamRecord, AnswerDetail, WrongQuestion
 from question_bank.models import Question
@@ -510,5 +512,150 @@ class ReportTabSwitchView(APIView):
         return Response({
             'warning': f'切屏警告！还剩{3 - exam_record.tab_switch_count}次机会',
             'count': exam_record.tab_switch_count
+        })
+
+
+class PracticeModeView(APIView):
+    """练习模式 - 从题库随机抽取题目"""
+    permission_classes = []
+
+    def get(self, request):
+        """获取练习题目（随机抽取）"""
+        # 1. 检查登录
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        # 2. 获取筛选参数
+        count = int(request.query_params.get('count', 10))  # 默认抽取10道
+        question_type = request.query_params.get('question_type')  # 题型筛选
+        difficulty = request.query_params.get('difficulty')  # 难度筛选
+        knowledge_point = request.query_params.get('knowledge_point')  # 知识点筛选
+
+        # 限制抽取数量范围 1-50
+        count = max(1, min(count, 50))
+
+        # 3. 构建查询
+        queryset = Question.objects.all()
+
+        if question_type:
+            queryset = queryset.filter(question_type=question_type)
+        if difficulty:
+            queryset = queryset.filter(difficulty=int(difficulty))
+        if knowledge_point:
+            queryset = queryset.filter(knowledge_point__icontains=knowledge_point)
+
+        # 4. 随机抽取
+        total_count = queryset.count()
+        if total_count == 0:
+            return Response({
+                'message': '题库中没有符合条件的题目',
+                'count': 0,
+                'questions': []
+            })
+
+        # 如果抽取数量大于可用数量，返回全部
+        if count >= total_count:
+            selected_questions = list(queryset)
+        else:
+            selected_questions = list(queryset.order_by('?')[:count])
+
+        # 5. 序列化（不包含答案）
+        questions_data = []
+        for q in selected_questions:
+            # 解析 options JSON
+            try:
+                options = json.loads(q.options) if q.options else {}
+            except json.JSONDecodeError:
+                options = {}
+
+            questions_data.append({
+                'id': q.id,
+                'content': q.content,
+                'question_type': q.question_type,
+                'question_type_display': q.get_question_type_display(),
+                'options': options,
+                'knowledge_point': q.knowledge_point or '',
+                'difficulty': q.difficulty,
+                'difficulty_display': q.get_difficulty_display(),
+            })
+
+        return Response({
+            'message': '获取成功',
+            'total_available': total_count,
+            'selected_count': len(questions_data),
+            'questions': questions_data
+        })
+
+    def post(self, request):
+        """提交练习答案并获取反馈"""
+        # 1. 检查登录
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        # 2. 获取提交的答案
+        answers = request.data.get('answers', [])
+        if not answers:
+            return Response({'error': '请提交答案'}, status=400)
+
+        # 3. 构建答案字典
+        answer_dict = {item['question_id']: item['answer'] for item in answers}
+
+        # 4. 获取题目并批改
+        question_ids = list(answer_dict.keys())
+        questions = Question.objects.filter(id__in=question_ids)
+        question_map = {q.id: q for q in questions}
+
+        correct_count = 0
+        total_count = len(question_ids)
+        details = []
+
+        for q_id, student_answer in answer_dict.items():
+            question = question_map.get(q_id)
+            if question is None:
+                continue
+
+            # 比较答案
+            is_correct = str(student_answer).strip().upper() == str(question.answer).strip().upper()
+            if is_correct:
+                correct_count += 1
+
+            details.append({
+                'question_id': question.id,
+                'content': question.content,
+                'correct': is_correct,
+                'correct_answer': question.answer,
+                'analysis': question.analysis or ''
+            })
+
+        return Response({
+            'total': total_count,
+            'correct': correct_count,
+            'accuracy': round(correct_count / total_count * 100, 1) if total_count > 0 else 0,
+            'details': details
+        })
+
+
+class PracticeKnowledgePointsView(APIView):
+    """获取练习模式可用的知识点列表"""
+    permission_classes = []
+
+    def get(self, request):
+        """获取所有可用的知识点"""
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        knowledge_points = Question.objects.exclude(
+            knowledge_point__isnull=True
+        ).exclude(
+            knowledge_point=''
+        ).values('knowledge_point').annotate(
+            count=Count('id')
+        ).order_by('-count')
+
+        return Response({
+            'knowledge_points': [
+                {'name': kp['knowledge_point'], 'count': kp['count']}
+                for kp in knowledge_points
+            ]
         })
 

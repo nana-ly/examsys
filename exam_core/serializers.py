@@ -1,8 +1,8 @@
 from rest_framework import serializers
-from django.utils import timezone
 from .models import ExamPaper, ExamPaperQuestion, ExamRecord, AnswerDetail, WrongQuestion
 from question_bank.models import Question
 from question_bank.serializers import QuestionSerializer
+from users.models import Class
 
 
 class ExamPaperQuestionSerializer(serializers.ModelSerializer):
@@ -185,7 +185,10 @@ class WrongQuestionCreateSerializer(serializers.ModelSerializer):
 
 class AutoGenerateSerializer(serializers.Serializer):
     name = serializers.CharField(label='试卷名称')
-    target_class = serializers.IntegerField(label='目标班级')
+    target_class = serializers.PrimaryKeyRelatedField(
+        label='目标班级',
+        queryset=Class.objects.all(),
+    )
     total_score = serializers.IntegerField(label='总分', default=100)
     duration = serializers.IntegerField(label='时长(分钟)', default=120)
     published_at = serializers.DateTimeField(label='发布时间', required=False, allow_null=True)

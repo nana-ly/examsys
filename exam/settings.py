@@ -2,6 +2,7 @@
 Django settings for exam project.
 """
 
+import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -62,8 +63,16 @@ WSGI_APPLICATION = 'exam.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': 'django.db.backends.mysql',
+        'NAME': 'exam_db',
+        'USER': 'exam_user',
+        'PASSWORD': 'MyProject123!',
+        'HOST': 'rm-cn-qnv4s01f40001g4o.rwlb.rds.aliyuncs.com',
+        'PORT': '3306',
+        'OPTIONS': {
+            'charset': 'utf8mb4',
+            'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
+        },
     }
 }
 
@@ -100,10 +109,12 @@ REST_FRAMEWORK = {
 }
 
 # CORS settings
-CORS_ALLOW_ALL_ORIGINS = True
-# CORS settings
+CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGIN_REGEXES = [
     r"^http://localhost:\d+$",
     r"^http://127\.0\.0\.1:\d+$",
 ]
 CORS_ALLOW_CREDENTIALS = True
+
+# Zhipu AI API Key
+ZHIPU_API_KEY = os.environ.get('ZHIPU_API_KEY', '2b41adce08b540f9b9203b161ac550f5.0x2EeGc6rETQMq51')

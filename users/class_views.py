@@ -69,7 +69,9 @@ class ClassViewSet(viewsets.ModelViewSet):
         """教师直接添加学生到班级"""
         class_obj = self.get_object()
 
-        if request.user.role != 'teacher' or class_obj.teacher != request.user:
+        if request.user.role == 'admin':
+            pass
+        elif request.user.role != 'teacher' or class_obj.teacher != request.user:
             return Response({'error': '无权操作该班级'}, status=status.HTTP_403_FORBIDDEN)
 
         serializer = AddStudentSerializer(
@@ -88,7 +90,9 @@ class ClassViewSet(viewsets.ModelViewSet):
     def remove_student(self, request, pk=None):
         """从班级移除学生"""
         class_obj = self.get_object()
-        if request.user.role != 'teacher' or class_obj.teacher != request.user:
+        if request.user.role == 'admin':
+            pass
+        elif request.user.role != 'teacher' or class_obj.teacher != request.user:
             return Response({'error': '无权操作该班级'}, status=status.HTTP_403_FORBIDDEN)
         student_id = request.data.get('student_id')
         try:

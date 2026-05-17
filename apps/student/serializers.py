@@ -1,7 +1,6 @@
 from rest_framework import serializers  # type: ignore
-from exam_core.models import ExamPaper, ExamPaperQuestion
+from exam_core.models import ExamPaper, ExamPaperQuestion, WrongQuestion
 from question_bank.models import Question
-from .models import WrongQuestion
 
 
 class ExamListSerializer(serializers.ModelSerializer):
@@ -73,5 +72,5 @@ class WrongQuestionSerializer(serializers.ModelSerializer):
         fields = [
             'wrong_id', 'question_id', 'content', 'question_type',
             'options', 'answer', 'analysis', 'knowledge_point',
-            'is_mastered', 'added_at'
+            'is_mastered', 'created_at'
         ]

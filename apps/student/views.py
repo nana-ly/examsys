@@ -271,8 +271,10 @@ class AIQuestionGenerateView(APIView):
         # 题型映射
         type_map = {
             'choice': '单选题',
-            'judge': '判断题',
-            'multiple': '多选题'
+            'true_false': '判断题',
+            'multiple_choice': '多选题',
+            'fill_blank': '填空题',
+            'essay': '简答题'
         }
         question_type_cn = type_map.get(question_type, '单选题')
 
@@ -284,8 +286,9 @@ class AIQuestionGenerateView(APIView):
         }
         difficulty_cn = diff_map.get(difficulty, '中等')
 
-        # 构建 Prompt
-        prompt = f"""你是一位资深的网络安全/计算机专业出题老师。
+        # 根据题型构建不同的 Prompt
+        if question_type in ['choice', 'multiple_choice']:
+            prompt = f"""你是一位资深的网络安全/计算机专业出题老师。
 
 你需要出一道{question_type_cn}，知识点：「{knowledge_point}」，难度：「{difficulty_cn}」。
 
@@ -297,6 +300,30 @@ class AIQuestionGenerateView(APIView):
 
 返回格式：
 {{"content": "题目内容", "options": {{"A": "选项A", "B": "选项B", "C": "选项C", "D": "选项D"}}, "answer": "A", "analysis": "详细解析"}}"""
+        elif question_type == 'true_false':
+            prompt = f"""你是一位资深的网络安全/计算机专业出题老师。
+
+你需要出一道{question_type_cn}，知识点：「{knowledge_point}」，难度：「{difficulty_cn}」。
+
+要求：
+1. 题目要结合实际应用场景，考查理解能力而非死记硬背
+2. 解析要详细（50字以上），解释为什么对、为什么错
+3. 严格按JSON格式返回
+
+返回格式：
+{{"content": "题目内容", "answer": "正确", "analysis": "详细解析"}}"""
+        else:
+            prompt = f"""你是一位资深的网络安全/计算机专业出题老师。
+
+你需要出一道{question_type_cn}，知识点：「{knowledge_point}」，难度：「{difficulty_cn}」。
+
+要求：
+1. 题目要结合实际应用场景，考查理解能力而非死记硬背
+2. 解析要详细（50字以上），包含关键知识点
+3. 严格按JSON格式返回
+
+返回格式：
+{{"content": "题目内容", "answer": "参考答案", "analysis": "详细解析"}}"""
 
         # 调用智谱清言 API
         api_url = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'

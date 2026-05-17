@@ -3,7 +3,7 @@ from rest_framework.response import Response
 from django.utils import timezone
 from django.http import Http404
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, Avg
 from django.conf import settings
 import json
 import requests
@@ -548,22 +548,17 @@ class PracticeModeView(APIView):
 
     def get(self, request):
         """获取练习题目（随机抽取）"""
-        # 1. 检查登录
         if not request.user.is_authenticated:
             return Response({'error': '请先登录'}, status=401)
 
-        # 2. 获取筛选参数
-        count = int(request.query_params.get('count', 10))  # 默认抽取10道
-        question_type = request.query_params.get('question_type')  # 题型筛选
-        difficulty = request.query_params.get('difficulty')  # 难度筛选
-        knowledge_point = request.query_params.get('knowledge_point')  # 知识点筛选
+        count = int(request.query_params.get('count', 10))
+        question_type = request.query_params.get('question_type')
+        difficulty = request.query_params.get('difficulty')
+        knowledge_point = request.query_params.get('knowledge_point')
 
-        # 限制抽取数量范围 1-50
         count = max(1, min(count, 50))
 
-        # 3. 构建查询
         queryset = Question.objects.all()
-
         if question_type:
             queryset = queryset.filter(question_type=question_type)
         if difficulty:
@@ -571,7 +566,6 @@ class PracticeModeView(APIView):
         if knowledge_point:
             queryset = queryset.filter(knowledge_point__icontains=knowledge_point)
 
-        # 4. 随机抽取
         total_count = queryset.count()
         if total_count == 0:
             return Response({
@@ -580,21 +574,17 @@ class PracticeModeView(APIView):
                 'questions': []
             })
 
-        # 如果抽取数量大于可用数量，返回全部
         if count >= total_count:
             selected_questions = list(queryset)
         else:
             selected_questions = list(queryset.order_by('?')[:count])
 
-        # 5. 序列化（不包含答案）
         questions_data = []
         for q in selected_questions:
-            # 解析 options JSON
             try:
                 options = json.loads(q.options) if q.options else {}
             except json.JSONDecodeError:
                 options = {}
-
             questions_data.append({
                 'id': q.id,
                 'content': q.content,
@@ -615,19 +605,14 @@ class PracticeModeView(APIView):
 
     def post(self, request):
         """提交练习答案并获取反馈"""
-        # 1. 检查登录
         if not request.user.is_authenticated:
             return Response({'error': '请先登录'}, status=401)
 
-        # 2. 获取提交的答案
         answers = request.data.get('answers', [])
         if not answers:
             return Response({'error': '请提交答案'}, status=400)
 
-        # 3. 构建答案字典
         answer_dict = {item['question_id']: item['answer'] for item in answers}
-
-        # 4. 获取题目并批改
         question_ids = list(answer_dict.keys())
         questions = Question.objects.filter(id__in=question_ids)
         question_map = {q.id: q for q in questions}
@@ -640,12 +625,9 @@ class PracticeModeView(APIView):
             question = question_map.get(q_id)
             if question is None:
                 continue
-
-            # 比较答案
             is_correct = str(student_answer).strip().upper() == str(question.answer).strip().upper()
             if is_correct:
                 correct_count += 1
-
             details.append({
                 'question_id': question.id,
                 'content': question.content,
@@ -667,7 +649,6 @@ class PracticeKnowledgePointsView(APIView):
     permission_classes = []
 
     def get(self, request):
-        """获取所有可用的知识点"""
         if not request.user.is_authenticated:
             return Response({'error': '请先登录'}, status=401)
 
@@ -684,5 +665,58 @@ class PracticeKnowledgePointsView(APIView):
                 {'name': kp['knowledge_point'], 'count': kp['count']}
                 for kp in knowledge_points
             ]
+        })
+
+
+class StudentStatsView(APIView):
+    """学生个人学习统计"""
+    permission_classes = []
+
+    def get(self, request):
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        user = request.user
+        if user.role != 'student':
+            return Response({'error': '仅学生可查看'}, status=403)
+
+        from exam_core.models import ExamRecord, WrongQuestion, AnswerDetail
+
+        all_records = ExamRecord.objects.filter(student=user)
+        submitted_records = all_records.filter(status__in=['submitted', 'graded'])
+
+        total_exams = all_records.count()
+        completed_exams = submitted_records.count()
+        avg_score = submitted_records.aggregate(avg=Avg('score'))['avg'] or 0
+
+        wrong_questions = WrongQuestion.objects.filter(student=user)
+        wrong_count = wrong_questions.count()
+        mastered_count = wrong_questions.filter(is_mastered=True).count()
+
+        total_answers = AnswerDetail.objects.filter(
+            record__student=user, record__status__in=['submitted', 'graded']
+        ).count()
+        correct_answers = AnswerDetail.objects.filter(
+            record__student=user, record__status__in=['submitted', 'graded'], is_correct=True
+        ).count()
+        correct_rate = round(correct_answers / total_answers * 100, 1) if total_answers > 0 else 0
+
+        study_dates = all_records.dates('started_at', 'day')
+        study_days = study_dates.count()
+
+        total_minutes = 0
+        for r in submitted_records:
+            if r.submitted_at and r.started_at:
+                total_minutes += (r.submitted_at - r.started_at).total_seconds() / 60
+
+        return Response({
+            'totalExams': total_exams,
+            'completedExams': completed_exams,
+            'avgScore': round(float(avg_score), 1),
+            'wrongCount': wrong_count,
+            'masteredQuestions': mastered_count,
+            'correctRate': correct_rate,
+            'studyDays': study_days,
+            'totalHours': round(total_minutes / 60, 1),
         })
 

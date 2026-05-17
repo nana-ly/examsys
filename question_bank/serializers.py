@@ -37,15 +37,27 @@ class QuestionSerializer(serializers.ModelSerializer):
 
 
 class QuestionListSerializer(serializers.ModelSerializer):
-    """题目列表序列化器"""
+    """题目列表序列化器（用于练习模式，不包含答案）"""
     creator_name = serializers.CharField(source='creator.real_name', read_only=True)
     question_type_display = serializers.CharField(source='get_question_type_display', read_only=True)
     difficulty_display = serializers.CharField(source='get_difficulty_display', read_only=True)
     
+    def to_representation(self, instance):
+        ret = super().to_representation(instance)
+        # 将 options 从字符串转换为字典（练习模式需要显示选项）
+        options = instance.options
+        if isinstance(options, str):
+            try:
+                options = json.loads(options) if options else {}
+            except json.JSONDecodeError:
+                options = {}
+        ret['options'] = options
+        return ret
+    
     class Meta:
         model = Question
         fields = [
-            'id', 'question_type', 'question_type_display', 'content',
+            'id', 'question_type', 'question_type_display', 'content', 'options',
             'knowledge_point', 'difficulty', 'difficulty_display',
             'creator_name', 'created_at'
         ]

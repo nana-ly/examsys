@@ -1,6 +1,7 @@
 from rest_framework import serializers  # type: ignore
 from exam_core.models import ExamPaper, ExamPaperQuestion, WrongQuestion
 from question_bank.models import Question
+import json
 
 
 class ExamListSerializer(serializers.ModelSerializer):
@@ -29,11 +30,16 @@ class QuestionSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         """重写方法，直接返回题目的字段"""
+        # 解析 options JSON 字符串为对象
+        try:
+            options = json.loads(instance.question.options) if instance.question.options else {}
+        except json.JSONDecodeError:
+            options = {}
         return {
             'id': instance.question.id,
             'content': instance.question.content,
             'question_type': instance.question.question_type,
-            'options': instance.question.options,
+            'options': options,
             'order': instance.order
         }
 
@@ -62,7 +68,14 @@ class WrongQuestionSerializer(serializers.ModelSerializer):
     question_id = serializers.IntegerField(source='question.id', read_only=True)
     content = serializers.CharField(source='question.content', read_only=True)
     question_type = serializers.CharField(source='question.question_type', read_only=True)
-    options = serializers.CharField(source='question.options', read_only=True)
+    options = serializers.SerializerMethodField()
+
+    def get_options(self, obj):
+        """解析 options JSON 字符串为对象"""
+        try:
+            return json.loads(obj.question.options) if obj.question.options else {}
+        except json.JSONDecodeError:
+            return {}
     answer = serializers.CharField(source='question.answer', read_only=True)
     analysis = serializers.CharField(source='question.analysis', read_only=True)
     knowledge_point = serializers.CharField(source='question.knowledge_point', read_only=True)

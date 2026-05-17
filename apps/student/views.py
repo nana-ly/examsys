@@ -264,17 +264,29 @@ class AIQuestionGenerateView(APIView):
         knowledge_point = request.data.get('knowledge_point', '')
         question_type = request.data.get('question_type', 'choice')
         difficulty = request.data.get('difficulty', 'medium')
+        count = min(int(request.data.get('count', 1)), 30)  # 最大30道题
 
         if not knowledge_point:
             return Response({'error': '请提供知识点'}, status=400)
 
-        # 题型映射
+        if count < 1:
+            count = 1
+
+        # 题型映射 (内部使用)
         type_map = {
             'choice': '单选题',
             'judge': '判断题',
             'multiple': '多选题'
         }
         question_type_cn = type_map.get(question_type, '单选题')
+
+        # 前端题型映射 (返回给前端)
+        frontend_type_map = {
+            'choice': 'choice',
+            'judge': 'true_false',
+            'multiple': 'multiple_choice'
+        }
+        frontend_question_type = frontend_type_map.get(question_type, 'choice')
 
         # 难度映射
         diff_map = {
@@ -284,8 +296,9 @@ class AIQuestionGenerateView(APIView):
         }
         difficulty_cn = diff_map.get(difficulty, '中等')
 
-        # 构建 Prompt
-        prompt = f"""你是一位资深的网络安全/计算机专业出题老师。
+        # 构建 Prompt (根据题目数量调整)
+        if count == 1:
+            prompt = f"""你是一位资深的网络安全/计算机专业出题老师。
 
 你需要出一道{question_type_cn}，知识点：「{knowledge_point}」，难度：「{difficulty_cn}」。
 
@@ -297,6 +310,23 @@ class AIQuestionGenerateView(APIView):
 
 返回格式：
 {{"content": "题目内容", "options": {{"A": "选项A", "B": "选项B", "C": "选项C", "D": "选项D"}}, "answer": "A", "analysis": "详细解析"}}"""
+        else:
+            prompt = f"""你是一位资深的网络安全/计算机专业出题老师。
+
+你需要出{count}道{question_type_cn}，知识点：「{knowledge_point}」，难度：「{difficulty_cn}」。
+每道题之间用 "---分隔---" 分隔。
+
+要求：
+1. 每道题要结合实际应用场景，考查理解能力而非死记硬背
+2. 选项要有迷惑性，错误选项要像常见错误答案
+3. 解析要详细（50字以上），解释为什么对、为什么错
+4. 严格按JSON格式返回
+
+返回格式：
+[
+{{"content": "题目1内容", "options": {{"A": "选项A", "B": "选项B", "C": "选项C", "D": "选项D"}}, "answer": "A", "analysis": "详细解析1"}},
+{{"content": "题目2内容", "options": {{"A": "选项A", "B": "选项B", "C": "选项C", "D": "选项D"}}, "answer": "B", "analysis": "详细解析2"}}
+]"""
 
         # 调用智谱清言 API
         api_url = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
@@ -315,7 +345,7 @@ class AIQuestionGenerateView(APIView):
         }
 
         try:
-            response = requests.post(api_url, headers=headers, json=payload, timeout=30)
+            response = requests.post(api_url, headers=headers, json=payload, timeout=60)
             response.raise_for_status()
             result = response.json()
             content = result['choices'][0]['message']['content']
@@ -331,32 +361,43 @@ class AIQuestionGenerateView(APIView):
 
             question_data = json.loads(content.strip())
 
+            # 确保返回的是列表
+            if not isinstance(question_data, list):
+                question_data = [question_data]
+
+            # 限制数量
+            question_data = question_data[:count]
+
         except json.JSONDecodeError:
             return Response({'error': 'AI 返回格式错误'}, status=500)
         except Exception as e:
             return Response({'error': f'AI 调用失败: {str(e)}'}, status=500)
 
-        # 保存到数据库
-        question = Question.objects.create(
-            question_type=question_type,
-            content=question_data['content'],
-            options=json.dumps(question_data['options']),
-            answer=question_data['answer'],
-            analysis=question_data.get('analysis', ''),
-            knowledge_point=knowledge_point,
-            difficulty={'easy': 1, 'medium': 3, 'hard': 5}.get(difficulty, 3),
-            creator=request.user
-        )
-
-        return Response({
-            'message': '题目生成成功',
-            'question': {
+        # 保存到数据库并构建返回数据
+        questions_list = []
+        for q_data in question_data:
+            question = Question.objects.create(
+                question_type=question_type,
+                content=q_data['content'],
+                options=json.dumps(q_data['options']),
+                answer=q_data['answer'],
+                analysis=q_data.get('analysis', ''),
+                knowledge_point=knowledge_point,
+                difficulty={'easy': 1, 'medium': 3, 'hard': 5}.get(difficulty, 3),
+                creator=request.user
+            )
+            questions_list.append({
                 'id': question.id,
                 'content': question.content,
+                'question_type': frontend_question_type,
                 'options': json.loads(question.options),
                 'answer': question.answer,
                 'analysis': question.analysis
-            }
+            })
+
+        return Response({
+            'message': f'成功生成 {len(questions_list)} 道题目',
+            'questions': questions_list
         })
 
 
@@ -627,10 +668,28 @@ class PracticeModeView(APIView):
                 'analysis': question.analysis or ''
             })
 
+        # 计算得分
+        accuracy = round(correct_count / total_count * 100, 1) if total_count > 0 else 0
+
+        # 5. 创建练习记录（用于学习统计）
+        try:
+            exam_record = ExamRecord.objects.create(
+                student=request.user,
+                paper=None,  # 练习不关联特定试卷
+                score=accuracy,
+                status='submitted',
+                submitted_at=timezone.now(),
+                is_practice=True,
+                question_count=total_count
+            )
+        except Exception as e:
+            # 记录创建失败不影响答题反馈返回
+            print(f"创建练习记录失败: {e}")
+
         return Response({
             'total': total_count,
             'correct': correct_count,
-            'accuracy': round(correct_count / total_count * 100, 1) if total_count > 0 else 0,
+            'accuracy': accuracy,
             'details': details
         })
 
@@ -658,4 +717,60 @@ class PracticeKnowledgePointsView(APIView):
                 for kp in knowledge_points
             ]
         })
+
+
+class StudyActivityView(APIView):
+    """学生学习活跃度数据 - 用于 ECharts 热力图"""
+    permission_classes = []
+
+    def get(self, request):
+        """返回过去 30 天每天的题目数量和平均得分"""
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        from datetime import timedelta
+        from django.db.models import Avg, Sum
+
+        # 计算过去 30 天的日期范围
+        end_date = timezone.now().date()
+        start_date = end_date - timedelta(days=29)
+
+        # 查询已提交的考试记录
+        records = ExamRecord.objects.filter(
+            student=request.user,
+            status__in=['submitted', 'graded'],
+            submitted_at__date__gte=start_date,
+            submitted_at__date__lte=end_date
+        )
+
+        # 按日期分组统计
+        activity_data = []
+        current_date = start_date
+
+        while current_date <= end_date:
+            day_records = records.filter(submitted_at__date=current_date)
+
+            # 统计题目数量：如果 question_count 字段有值则累加，否则统计记录数
+            total_questions = day_records.aggregate(
+                total=Sum('question_count')
+            )['total'] or 0
+
+            # 如果 total_questions 为 0（可能是旧数据没有 question_count），用记录数
+            if total_questions == 0:
+                total_questions = day_records.count()
+
+            avg_score = 0.0
+            if day_records.count() > 0:
+                avg_score = day_records.aggregate(Avg('score'))['score__avg'] or 0.0
+                avg_score = round(float(avg_score), 1)
+
+            activity_data.append({
+                'date': current_date.strftime('%Y-%m-%d'),
+                'count': total_questions,
+                'avg_score': avg_score
+            })
+
+            current_date += timedelta(days=1)
+
+        return Response(activity_data)
 

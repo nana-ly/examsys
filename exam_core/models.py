@@ -75,7 +75,7 @@ class ExamRecord(models.Model):
         ('submitted', '已提交'),
         ('graded', '已评分'),
     ]
-    
+
     student = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -87,23 +87,28 @@ class ExamRecord(models.Model):
         ExamPaper,
         on_delete=models.CASCADE,
         related_name='exam_records',
-        verbose_name='试卷'
+        verbose_name='试卷',
+        null=True,
+        blank=True
     )
     score = models.DecimalField('得分', max_digits=5, decimal_places=1, null=True, blank=True)
     status = models.CharField('状态', max_length=20, choices=STATUS_CHOICES, default='ongoing')
     started_at = models.DateTimeField('开始时间', auto_now_add=True)
     submitted_at = models.DateTimeField('提交时间', null=True, blank=True)
     tab_switch_count = models.IntegerField('切屏次数', default=0)
-    
+    is_practice = models.BooleanField('是否练习', default=False)
+    question_count = models.IntegerField('题目数量', default=0)
+
     class Meta:
         db_table = 'exam_records'
         verbose_name = '考试记录'
         verbose_name_plural = verbose_name
-        unique_together = ['student', 'paper']
         ordering = ['-started_at']
-    
+
     def __str__(self):
-        return f"{self.student.username} - {self.paper.name}"
+        if self.is_practice:
+            return f"{self.student.username} - 练习记录"
+        return f"{self.student.username} - {self.paper.name if self.paper else '未知试卷'}"
 
 
 class AnswerDetail(models.Model):

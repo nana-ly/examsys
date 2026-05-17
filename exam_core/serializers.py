@@ -119,14 +119,20 @@ class AnswerDetailSerializer(serializers.ModelSerializer):
 
 class ExamRecordSerializer(serializers.ModelSerializer):
     """考试记录序列化器"""
-    paper_name = serializers.CharField(source='paper.name', read_only=True)
+    paper_name = serializers.SerializerMethodField()
     student_name = serializers.CharField(source='student.real_name', read_only=True)
-    
+
+    def get_paper_name(self, obj):
+        if obj.is_practice:
+            return '练习'
+        return obj.paper.name if obj.paper else '未知试卷'
+
     class Meta:
         model = ExamRecord
         fields = [
             'id', 'student', 'student_name', 'paper', 'paper_name',
-            'score', 'status', 'started_at', 'submitted_at'
+            'score', 'status', 'started_at', 'submitted_at',
+            'is_practice', 'question_count'
         ]
         read_only_fields = ['id', 'started_at']
 
@@ -135,12 +141,12 @@ class ExamRecordDetailSerializer(serializers.ModelSerializer):
     """考试记录详情序列化器"""
     paper = ExamPaperSerializer(read_only=True)
     answers = AnswerDetailSerializer(source='answer_details', many=True, read_only=True)
-    
+
     class Meta:
         model = ExamRecord
         fields = [
             'id', 'paper', 'score', 'status', 'started_at',
-            'submitted_at', 'answers'
+            'submitted_at', 'answers', 'is_practice', 'question_count'
         ]
 
 

@@ -151,7 +151,11 @@ class SubmitAnswerView(APIView):
             for q_id in wrong_question_ids:
                 WrongQuestion.objects.get_or_create(
                     student=request.user,
-                    question_id=q_id
+                    question_id=q_id,
+                    defaults={
+                        'wrong_answer': answer_dict.get(q_id, ''),
+                        'source_type': 'exam',
+                    }
                 )
 
         return Response({
@@ -219,7 +223,12 @@ class WrongQuestionAddView(APIView):
             return Response({'message': '已在错题本中'})
 
         # 添加到错题本
-        WrongQuestion.objects.create(student=request.user, question=question)
+        WrongQuestion.objects.create(
+            student=request.user,
+            question=question,
+            wrong_answer='',
+            source_type='practice'
+        )
         return Response({'message': '已添加到错题本'})
 
 
@@ -476,19 +485,29 @@ class StartExamView(APIView):
         except ExamPaper.DoesNotExist:
             return Response({'error': '试卷不存在或未发布'}, status=404)
         
-        # 3. 检查是否已有进行中的考试记录（避免重复创建）
+        # 3. 检查是否已有考试记录
         existing_record = ExamRecord.objects.filter(
             student=request.user,
-            paper=exam,
-            status='ongoing'
+            paper=exam
         ).first()
-        
+
         if existing_record:
+            if existing_record.status == 'ongoing':
+                return Response({
+                    'message': '继续考试',
+                    'exam_record_id': existing_record.id
+                })
+            # 已提交/已评分，重置为 ongoing 允许重考
+            existing_record.status = 'ongoing'
+            existing_record.score = None
+            existing_record.submitted_at = None
+            existing_record.save()
+            existing_record.answer_details.all().delete()
             return Response({
-                'message': '继续考试',
+                'message': '重新开始考试',
                 'exam_record_id': existing_record.id
             })
-        
+
         # 4. 创建 ExamRecord，status='ongoing'
         exam_record = ExamRecord.objects.create(
             student=request.user,

@@ -1,3 +1,5 @@
+import json
+
 from rest_framework import serializers  # type: ignore
 from exam_core.models import ExamPaper, ExamPaperQuestion, WrongQuestion
 from question_bank.models import Question
@@ -29,11 +31,17 @@ class QuestionSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         """重写方法，直接返回题目的字段"""
+        options = instance.question.options
+        if isinstance(options, str):
+            try:
+                options = json.loads(options) if options else {}
+            except json.JSONDecodeError:
+                options = {}
         return {
             'id': instance.question.id,
             'content': instance.question.content,
             'question_type': instance.question.question_type,
-            'options': instance.question.options,
+            'options': options,
             'order': instance.order
         }
 

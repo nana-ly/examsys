@@ -96,7 +96,9 @@ class ExamRecord(models.Model):
     started_at = models.DateTimeField('开始时间', auto_now_add=True)
     submitted_at = models.DateTimeField('提交时间', null=True, blank=True)
     tab_switch_count = models.IntegerField('切屏次数', default=0)
-    
+    is_practice = models.BooleanField('练习模式', default=False)
+    question_count = models.IntegerField('题目数量', default=0)
+
     class Meta:
         db_table = 'exam_records'
         verbose_name = '考试记录'
@@ -151,11 +153,13 @@ class WrongQuestion(models.Model):
         related_name='wrong_by_students',
         verbose_name='题目'
     )
-    wrong_answer = models.TextField('错误答案')
+    wrong_answer = models.TextField('错误答案', default='')
+    source_type = models.CharField('来源类型', max_length=10, default='main')
+    source_id = models.IntegerField('来源ID', null=True, blank=True)
     is_mastered = models.BooleanField('是否掌握', default=False)
     created_at = models.DateTimeField('记录时间', auto_now_add=True)
     mastered_at = models.DateTimeField('掌握时间', null=True, blank=True)
-    
+
     class Meta:
         db_table = 'wrong_questions'
         verbose_name = '错题本'

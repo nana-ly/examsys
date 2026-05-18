@@ -200,26 +200,57 @@ class WrongQuestionAddView(APIView):
             return Response({'error': '请先登录'}, status=401)
 
         question_id = request.data.get('question_id')
+        source_type = request.data.get('source_type', 'main')
+        wrong_answer = request.data.get('wrong_answer', '')
+
         if not question_id:
             return Response({'error': '请提供 question_id'}, status=400)
 
-        # 检查题目是否存在
-        try:
-            question = Question.objects.get(id=question_id)
-        except Question.DoesNotExist:
-            return Response({'error': '题目不存在'}, status=404)
+        # 根据来源查找题目
+        if source_type == 'ai':
+            try:
+                ai_question = QuestionAI.objects.get(id=question_id)
+            except QuestionAI.DoesNotExist:
+                return Response({'error': 'AI题目不存在'}, status=404)
 
-        # 检查是否已在错题本中
-        exists = WrongQuestion.objects.filter(
-            student=request.user,
-            question=question
-        ).exists()
+            # 检查是否已在错题本中
+            exists = WrongQuestion.objects.filter(
+                student=request.user,
+                source_type='ai',
+                source_id=question_id
+            ).exists()
+            if exists:
+                return Response({'message': '已在错题本中'})
 
-        if exists:
-            return Response({'message': '已在错题本中'})
+            WrongQuestion.objects.create(
+                student=request.user,
+                source_type='ai',
+                source_id=question_id,
+                wrong_answer=wrong_answer,
+                is_mastered=False
+            )
+        else:
+            try:
+                question = Question.objects.get(id=question_id)
+            except Question.DoesNotExist:
+                return Response({'error': '题目不存在'}, status=404)
 
-        # 添加到错题本
-        WrongQuestion.objects.create(student=request.user, question=question)
+            exists = WrongQuestion.objects.filter(
+                student=request.user,
+                question=question
+            ).exists()
+            if exists:
+                return Response({'message': '已在错题本中'})
+
+            WrongQuestion.objects.create(
+                student=request.user,
+                question=question,
+                source_type='main',
+                source_id=question_id,
+                wrong_answer=wrong_answer,
+                is_mastered=False
+            )
+
         return Response({'message': '已添加到错题本'})
 
 
@@ -298,11 +329,16 @@ class AIQuestionGenerateView(APIView):
         difficulty_cn = diff_map.get(difficulty, '中等')
 
         # 构建 Prompt (根据题目数量调整)
+        is_multiple = (question_type == 'multiple')
+        multi_instruction = ''
+        if is_multiple:
+            multi_instruction = '\n注意：这是**多选题**，必须返回多个正确答案，answer格式如"A,B,C"。如果该知识点无法出多选题，请改为出单选题并设置question_type为"choice"。\n'
+
         if count == 1:
             prompt = f"""你是一位资深的网络安全/计算机专业出题老师。
 
 你需要出一道{question_type_cn}，知识点：「{knowledge_point}」，难度：「{difficulty_cn}」。
-
+{multi_instruction}
 要求：
 1. 题目要结合实际应用场景，考查理解能力而非死记硬背
 2. 选项要有迷惑性，错误选项要像常见错误答案
@@ -310,11 +346,12 @@ class AIQuestionGenerateView(APIView):
 4. 严格按JSON格式返回
 
 返回格式：
-{{"content": "题目内容", "options": {{"A": "选项A", "B": "选项B", "C": "选项C", "D": "选项D"}}, "answer": "A", "analysis": "详细解析"}}"""
+{{"content": "题目内容", "question_type": "choice", "options": {{"A": "选项A", "B": "选项B", "C": "选项C", "D": "选项D"}}, "answer": "A", "analysis": "详细解析"}}"""
         else:
             prompt = f"""你是一位资深的网络安全/计算机专业出题老师。
 
 你需要出{count}道{question_type_cn}，知识点：「{knowledge_point}」，难度：「{difficulty_cn}」。
+{multi_instruction}
 每道题之间用 "---分隔---" 分隔。
 
 要求：
@@ -325,8 +362,8 @@ class AIQuestionGenerateView(APIView):
 
 返回格式：
 [
-{{"content": "题目1内容", "options": {{"A": "选项A", "B": "选项B", "C": "选项C", "D": "选项D"}}, "answer": "A", "analysis": "详细解析1"}},
-{{"content": "题目2内容", "options": {{"A": "选项A", "B": "选项B", "C": "选项C", "D": "选项D"}}, "answer": "B", "analysis": "详细解析2"}}
+{{"content": "题目1内容", "question_type": "choice", "options": {{"A": "选项A", "B": "选项B", "C": "选项C", "D": "选项D"}}, "answer": "A", "analysis": "详细解析1"}},
+{{"content": "题目2内容", "question_type": "choice", "options": {{"A": "选项A", "B": "选项B", "C": "选项C", "D": "选项D"}}, "answer": "B", "analysis": "详细解析2"}}
 ]"""
 
         # 调用智谱清言 API
@@ -378,15 +415,27 @@ class AIQuestionGenerateView(APIView):
         is_ai_practice = target_library == 'ai_practice'
         difficulty_value = {'easy': 1, 'medium': 3, 'hard': 5}.get(difficulty, 3)
 
+        # AI 返回的 question_type 映射（AI可能降级为choice）
+        ai_type_map_reverse = {
+            'choice': 'choice',
+            'multiple_choice': 'multiple_choice',
+            'multiple': 'multiple_choice',
+            'single': 'choice',
+        }
+
         # 保存到数据库并构建返回数据
         questions_list = []
         for q_data in question_data:
+            # 优先使用AI返回的question_type，否则用请求的type
+            ai_type = q_data.get('question_type', frontend_question_type)
+            final_type = ai_type_map_reverse.get(ai_type, frontend_question_type)
+
             if is_ai_practice:
                 question = QuestionAI.objects.create(
-                    question_type=frontend_question_type,
+                    question_type=final_type,
                     content=q_data['content'],
-                    options=json.dumps(q_data['options']),
-                    answer=q_data['answer'],
+                    options=json.dumps(q_data.get('options', {})),
+                    answer=q_data.get('answer', ''),
                     analysis=q_data.get('analysis', ''),
                     knowledge_point=knowledge_point,
                     difficulty=difficulty_value,
@@ -394,10 +443,10 @@ class AIQuestionGenerateView(APIView):
                 )
             else:
                 question = Question.objects.create(
-                    question_type=frontend_question_type,
+                    question_type=final_type,
                     content=q_data['content'],
-                    options=json.dumps(q_data['options']),
-                    answer=q_data['answer'],
+                    options=json.dumps(q_data.get('options', {})),
+                    answer=q_data.get('answer', ''),
                     analysis=q_data.get('analysis', ''),
                     knowledge_point=knowledge_point,
                     difficulty=difficulty_value,
@@ -406,7 +455,7 @@ class AIQuestionGenerateView(APIView):
             questions_list.append({
                 'id': question.id,
                 'content': question.content,
-                'question_type': frontend_question_type,
+                'question_type': final_type,
                 'options': json.loads(question.options),
                 'answer': question.answer,
                 'analysis': question.analysis,

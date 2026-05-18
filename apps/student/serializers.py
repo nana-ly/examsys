@@ -30,7 +30,6 @@ class QuestionSerializer(serializers.ModelSerializer):
 
     def to_representation(self, instance):
         """重写方法，直接返回题目的字段"""
-        # 解析 options JSON 字符串为对象
         try:
             options = json.loads(instance.question.options) if instance.question.options else {}
         except json.JSONDecodeError:
@@ -63,27 +62,64 @@ class ExamDetailSerializer(serializers.ModelSerializer):
 
 
 class WrongQuestionSerializer(serializers.ModelSerializer):
-    """错题本序列化器（含答案和解析）"""
+    """错题本序列化器（兼容主题库和AI库）"""
     wrong_id = serializers.IntegerField(source='id', read_only=True)
-    question_id = serializers.IntegerField(source='question.id', read_only=True)
-    content = serializers.CharField(source='question.content', read_only=True)
-    question_type = serializers.CharField(source='question.question_type', read_only=True)
+    question_id = serializers.SerializerMethodField()
+    content = serializers.SerializerMethodField()
+    question_type = serializers.SerializerMethodField()
     options = serializers.SerializerMethodField()
+    answer = serializers.SerializerMethodField()
+    analysis = serializers.SerializerMethodField()
+    knowledge_point = serializers.SerializerMethodField()
+    difficulty = serializers.SerializerMethodField()
+
+    def get_question_id(self, obj):
+        if obj.source_type == 'ai':
+            return obj.source_id
+        return obj.question_id if obj.question else None
+
+    def get_content(self, obj):
+        if obj.source_type == 'ai' or not obj.question:
+            return ''
+        return obj.question.content
+
+    def get_question_type(self, obj):
+        if obj.source_type == 'ai' or not obj.question:
+            return ''
+        return obj.question.question_type
 
     def get_options(self, obj):
-        """解析 options JSON 字符串为对象"""
+        if obj.source_type == 'ai' or not obj.question:
+            return {}
         try:
             return json.loads(obj.question.options) if obj.question.options else {}
         except json.JSONDecodeError:
             return {}
-    answer = serializers.CharField(source='question.answer', read_only=True)
-    analysis = serializers.CharField(source='question.analysis', read_only=True)
-    knowledge_point = serializers.CharField(source='question.knowledge_point', read_only=True)
+
+    def get_answer(self, obj):
+        if obj.source_type == 'ai' or not obj.question:
+            return ''
+        return obj.question.answer
+
+    def get_analysis(self, obj):
+        if obj.source_type == 'ai' or not obj.question:
+            return ''
+        return obj.question.analysis or ''
+
+    def get_knowledge_point(self, obj):
+        if obj.source_type == 'ai' or not obj.question:
+            return ''
+        return obj.question.knowledge_point or ''
+
+    def get_difficulty(self, obj):
+        if obj.source_type == 'ai' or not obj.question:
+            return 3
+        return obj.question.difficulty
 
     class Meta:
         model = WrongQuestion
         fields = [
             'wrong_id', 'question_id', 'content', 'question_type',
-            'options', 'answer', 'analysis', 'knowledge_point',
-            'is_mastered', 'created_at'
+            'options', 'answer', 'analysis', 'knowledge_point', 'difficulty',
+            'is_mastered', 'created_at', 'source_type', 'source_id'
         ]

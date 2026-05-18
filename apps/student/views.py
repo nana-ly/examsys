@@ -4,6 +4,7 @@ from django.utils import timezone
 from django.http import Http404
 from django.db import transaction
 from django.db.models import Count, Avg
+from django.db.models.functions import TruncDate
 from django.conf import settings
 import json
 import requests
@@ -23,12 +24,27 @@ class ExamListView(APIView):
         if not request.user.is_authenticated:
             return Response({'error': '请先登录'}, status=401)
 
+        now = timezone.now()
+
+        # 获取当前学生已经提交或已评分的试卷ID，这些试卷不再出现在待考列表中
+        submitted_paper_ids = ExamRecord.objects.filter(
+            student=request.user,
+            status__in=['submitted', 'graded']
+        ).values_list('paper_id', flat=True)
+
         # 只返回已发布的试卷（published_at 不为空且 <= 当前时间）
         # 只返回当前学生所在班级的试卷
+        # 排除已提交/已评分的试卷
+        # 排除超过结束时间的试卷
         queryset = ExamPaper.objects.filter(
             published_at__isnull=False,
-            published_at__lte=timezone.now(),
+            published_at__lte=now,
             target_class__class_students__student=request.user
+        ).exclude(
+            id__in=submitted_paper_ids
+        ).exclude(
+            end_time__isnull=False,
+            end_time__lt=now
         ).distinct().order_by('-published_at')
 
         serializer = ExamListSerializer(queryset, many=True)
@@ -183,10 +199,24 @@ class WrongQuestionListView(APIView):
         if mastered is not None:
             queryset = queryset.filter(is_mastered=mastered.lower() == 'true')
 
+        # 按题型筛选
+        question_type = request.query_params.get('question_type')
+        if question_type:
+            queryset = queryset.filter(question__question_type=question_type)
+
         # 按知识点筛选
         knowledge_point = request.query_params.get('knowledge_point')
         if knowledge_point:
             queryset = queryset.filter(question__knowledge_point=knowledge_point)
+
+        # 按关键词搜索（支持题目内容和知识点模糊搜索）
+        keyword = request.query_params.get('keyword')
+        if keyword:
+            from django.db.models import Q
+            queryset = queryset.filter(
+                Q(question__content__icontains=keyword) |
+                Q(question__knowledge_point__icontains=keyword)
+            )
 
         queryset = queryset.order_by('-created_at')
 
@@ -376,7 +406,7 @@ class AIQuestionGenerateView(APIView):
         question = Question.objects.create(
             question_type=question_type,
             content=question_data['content'],
-            options=json.dumps(question_data['options']),
+            options=json.dumps(question_data.get('options', {})),
             answer=question_data['answer'],
             analysis=question_data.get('analysis', ''),
             knowledge_point=knowledge_point,
@@ -687,6 +717,80 @@ class PracticeKnowledgePointsView(APIView):
         })
 
 
+class ProfileView(APIView):
+    """学生个人信息"""
+    permission_classes = []
+
+    def get(self, request):
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        user = request.user
+        if user.role != 'student':
+            return Response({'error': '仅学生可查看'}, status=403)
+
+        from exam_core.models import ExamRecord, WrongQuestion, AnswerDetail
+
+        all_records = ExamRecord.objects.filter(student=user)
+        submitted_records = all_records.filter(status__in=['submitted', 'graded'])
+
+        total_exams = all_records.count()
+        completed_exams = submitted_records.count()
+        avg_score = submitted_records.aggregate(avg=Avg('score'))['avg'] or 0
+
+        wrong_questions = WrongQuestion.objects.filter(student=user)
+        wrong_count = wrong_questions.count()
+        mastered_questions = wrong_questions.filter(is_mastered=True).count()
+
+        total_answers = AnswerDetail.objects.filter(
+            record__student=user, record__status__in=['submitted', 'graded']
+        ).count()
+        correct_answers = AnswerDetail.objects.filter(
+            record__student=user, record__status__in=['submitted', 'graded'], is_correct=True
+        ).count()
+        correct_rate = round(correct_answers / total_answers * 100, 1) if total_answers > 0 else 0
+
+        study_dates = all_records.dates('started_at', 'day')
+        study_days = study_dates.count()
+
+        total_minutes = 0
+        for r in submitted_records:
+            if r.submitted_at and r.started_at:
+                total_minutes += (r.submitted_at - r.started_at).total_seconds() / 60
+
+        # 动态计算每日学习数据（用于热力图）
+        study_data = (
+            AnswerDetail.objects
+            .filter(
+                record__student=user,
+                record__status__in=['submitted', 'graded']
+            )
+            .annotate(date=TruncDate('record__submitted_at'))
+            .values('date')
+            .annotate(count=Count('id'))
+            .order_by('-date')[:91]  # 最近91天（约3个月）
+        )
+
+        study_data_list = [
+            {'date': item['date'].strftime('%Y-%m-%d'), 'count': item['count']}
+            for item in study_data
+        ]
+
+        return Response({
+            'stats': {
+                'total_exams': total_exams,
+                'avg_score': round(float(avg_score), 1),
+                'wrong_count': wrong_count,
+                'study_days': study_days,
+                'completed_exams': completed_exams,
+                'mastered_questions': mastered_questions,
+                'correct_rate': correct_rate,
+                'total_hours': round(total_minutes / 60, 1),
+            },
+            'study_data': study_data_list,
+        })
+
+
 class StudentStatsView(APIView):
     """学生个人学习统计"""
     permission_classes = []
@@ -738,4 +842,3 @@ class StudentStatsView(APIView):
             'studyDays': study_days,
             'totalHours': round(total_minutes / 60, 1),
         })
-

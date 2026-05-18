@@ -75,10 +75,13 @@ class WrongQuestionSerializer(serializers.ModelSerializer):
     analysis = serializers.CharField(source='question.analysis', read_only=True)
     knowledge_point = serializers.CharField(source='question.knowledge_point', read_only=True)
 
+    difficulty = serializers.IntegerField(source='question.difficulty', read_only=True)
+    wrong_answer = serializers.CharField(read_only=True)
+
     class Meta:
         model = WrongQuestion
         fields = [
-            'wrong_id', 'question_id', 'content', 'question_type',
-            'options', 'answer', 'analysis', 'knowledge_point',
-            'is_mastered', 'created_at'
+            'id', 'wrong_id', 'question_id', 'content', 'question_type',
+            'options', 'answer', 'analysis', 'knowledge_point', 'difficulty',
+            'wrong_answer', 'is_mastered', 'created_at'
         ]

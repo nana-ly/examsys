@@ -3,7 +3,8 @@ from .views import (
     ExamListView, ExamDetailView, SubmitAnswerView,
     WrongQuestionListView, WrongQuestionAddView, WrongQuestionMasterView,
     AIQuestionGenerateView, AIQuestionAskView, StartExamView, ReportTabSwitchView,
-    PracticeModeView, PracticeKnowledgePointsView, StudyActivityView
+    PracticeModeView, PracticeKnowledgePointsView, StudyActivityView,
+    PracticeRecordView
 )
 
 urlpatterns = [
@@ -15,11 +16,14 @@ urlpatterns = [
     path('wrongbook/add/', WrongQuestionAddView.as_view(), name='wrongbook-add'),
     path('wrongbook/<int:wrong_id>/master/', WrongQuestionMasterView.as_view(), name='wrongbook-master'),
     path('ai/generate_question/', AIQuestionGenerateView.as_view(), name='ai-generate-question'),
+    path('ai/generate/', AIQuestionGenerateView.as_view(), name='ai-generate'),
     path('ai/ask/', AIQuestionAskView.as_view(), name='ai-ask'),
     path('api/report_tab_switch/', ReportTabSwitchView.as_view(), name='report_tab_switch'),
     # 练习模式
     path('practice/', PracticeModeView.as_view(), name='practice-mode'),
     path('practice/knowledge_points/', PracticeKnowledgePointsView.as_view(), name='practice-knowledge-points'),
+    # 做题记录
+    path('practice/records/', PracticeRecordView.as_view(), name='practice-records'),
     # 学习活跃度
     path('activity/', StudyActivityView.as_view(), name='study-activity'),
 ]

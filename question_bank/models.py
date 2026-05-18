@@ -27,6 +27,7 @@ class Question(models.Model):
     analysis = models.TextField('解析', blank=True, null=True)
     knowledge_point = models.CharField('知识点', max_length=200, blank=True, null=True)
     difficulty = models.IntegerField('难度', choices=DIFFICULTY_CHOICES, default=3)
+    score = models.IntegerField('分值', default=5)
     creator = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -45,3 +46,35 @@ class Question(models.Model):
     
     def __str__(self):
         return f"{self.get_question_type_display()}: {self.content[:50]}"
+
+
+class QuestionAI(models.Model):
+    """AI 练习题库表（结构与 Question 相同）"""
+    QUESTION_TYPE_CHOICES = Question.QUESTION_TYPE_CHOICES
+    DIFFICULTY_CHOICES = Question.DIFFICULTY_CHOICES
+
+    question_type = models.CharField('题型', max_length=20, choices=QUESTION_TYPE_CHOICES)
+    content = models.TextField('题目内容')
+    options = models.TextField('选项', blank=True, default='{}', help_text='JSON格式，如：{"A": "选项1", "B": "选项2"}')
+    answer = models.TextField('答案')
+    analysis = models.TextField('解析', blank=True, null=True)
+    knowledge_point = models.CharField('知识点', max_length=200, blank=True, null=True)
+    difficulty = models.IntegerField('难度', choices=DIFFICULTY_CHOICES, default=3)
+    score = models.IntegerField('分值', default=5)
+    creator = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='created_ai_questions',
+        verbose_name='创建者'
+    )
+    created_at = models.DateTimeField('创建时间', auto_now_add=True)
+    updated_at = models.DateTimeField('更新时间', auto_now=True)
+
+    class Meta:
+        db_table = 'question_ai'
+        verbose_name = 'AI题目'
+        verbose_name_plural = verbose_name
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"AI-{self.get_question_type_display()}: {self.content[:50]}"

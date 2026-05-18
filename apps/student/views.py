@@ -9,8 +9,8 @@ import json
 import requests
 import random
 
-from exam_core.models import ExamPaper, ExamPaperQuestion, ExamRecord, AnswerDetail, WrongQuestion
-from question_bank.models import Question
+from exam_core.models import ExamPaper, ExamPaperQuestion, ExamRecord, AnswerDetail, WrongQuestion, PracticeRecord
+from question_bank.models import Question, QuestionAI
 from .serializers import ExamListSerializer, ExamDetailSerializer, WrongQuestionSerializer
 
 
@@ -265,6 +265,7 @@ class AIQuestionGenerateView(APIView):
         question_type = request.data.get('question_type', 'choice')
         difficulty = request.data.get('difficulty', 'medium')
         count = min(int(request.data.get('count', 1)), 30)  # 最大30道题
+        target_library = request.data.get('target_library', 'main')  # main 或 ai_practice
 
         if not knowledge_point:
             return Response({'error': '请提供知识点'}, status=400)
@@ -373,26 +374,43 @@ class AIQuestionGenerateView(APIView):
         except Exception as e:
             return Response({'error': f'AI 调用失败: {str(e)}'}, status=500)
 
+        # 根据 target_library 选择存储的表
+        is_ai_practice = target_library == 'ai_practice'
+        difficulty_value = {'easy': 1, 'medium': 3, 'hard': 5}.get(difficulty, 3)
+
         # 保存到数据库并构建返回数据
         questions_list = []
         for q_data in question_data:
-            question = Question.objects.create(
-                question_type=question_type,
-                content=q_data['content'],
-                options=json.dumps(q_data['options']),
-                answer=q_data['answer'],
-                analysis=q_data.get('analysis', ''),
-                knowledge_point=knowledge_point,
-                difficulty={'easy': 1, 'medium': 3, 'hard': 5}.get(difficulty, 3),
-                creator=request.user
-            )
+            if is_ai_practice:
+                question = QuestionAI.objects.create(
+                    question_type=frontend_question_type,
+                    content=q_data['content'],
+                    options=json.dumps(q_data['options']),
+                    answer=q_data['answer'],
+                    analysis=q_data.get('analysis', ''),
+                    knowledge_point=knowledge_point,
+                    difficulty=difficulty_value,
+                    creator=request.user
+                )
+            else:
+                question = Question.objects.create(
+                    question_type=frontend_question_type,
+                    content=q_data['content'],
+                    options=json.dumps(q_data['options']),
+                    answer=q_data['answer'],
+                    analysis=q_data.get('analysis', ''),
+                    knowledge_point=knowledge_point,
+                    difficulty=difficulty_value,
+                    creator=request.user
+                )
             questions_list.append({
                 'id': question.id,
                 'content': question.content,
                 'question_type': frontend_question_type,
                 'options': json.loads(question.options),
                 'answer': question.answer,
-                'analysis': question.analysis
+                'analysis': question.analysis,
+                'source_type': 'ai_practice' if is_ai_practice else 'main'
             })
 
         return Response({
@@ -413,6 +431,7 @@ class AIQuestionAskView(APIView):
         # 获取参数
         question_id = request.data.get('question_id')
         student_question = request.data.get('student_question', '')
+        source_type = request.data.get('source_type', 'main')  # main 或 ai
 
         if not question_id:
             return Response({'error': '请提供 question_id'}, status=400)
@@ -420,10 +439,13 @@ class AIQuestionAskView(APIView):
         if not student_question:
             return Response({'error': '请提供 student_question'}, status=400)
 
-        # 获取题目
+        # 根据 source_type 从不同表获取题目
         try:
-            question = Question.objects.get(id=question_id)
-        except Question.DoesNotExist:
+            if source_type == 'ai':
+                question = QuestionAI.objects.get(id=question_id)
+            else:
+                question = Question.objects.get(id=question_id)
+        except (Question.DoesNotExist, QuestionAI.DoesNotExist):
             return Response({'error': '题目不存在'}, status=404)
 
         # 构建 Prompt
@@ -600,7 +622,7 @@ class PracticeModeView(APIView):
         else:
             selected_questions = list(queryset.order_by('?')[:count])
 
-        # 5. 序列化（不包含答案）
+        # 5. 序列化（包含答案和解析，练习模式需要即时反馈）
         questions_data = []
         for q in selected_questions:
             # 解析 options JSON
@@ -615,6 +637,8 @@ class PracticeModeView(APIView):
                 'question_type': q.question_type,
                 'question_type_display': q.get_question_type_display(),
                 'options': options,
+                'answer': q.answer,
+                'analysis': q.analysis or '',
                 'knowledge_point': q.knowledge_point or '',
                 'difficulty': q.difficulty,
                 'difficulty_display': q.get_difficulty_display(),
@@ -773,4 +797,83 @@ class StudyActivityView(APIView):
             current_date += timedelta(days=1)
 
         return Response(activity_data)
+
+
+class PracticeRecordView(APIView):
+    """做题记录"""
+    permission_classes = []
+
+    def get(self, request):
+        """获取做题记录（按分页）"""
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        page = int(request.query_params.get('page', 1))
+        page_size = int(request.query_params.get('page_size', 10))
+        date_from = request.query_params.get('date_from')
+        date_to = request.query_params.get('date_to')
+
+        queryset = PracticeRecord.objects.filter(student=request.user)
+
+        if date_from:
+            queryset = queryset.filter(created_at__date__gte=date_from)
+        if date_to:
+            queryset = queryset.filter(created_at__date__lte=date_to)
+
+        queryset = queryset.order_by('-created_at')
+
+        total = queryset.count()
+        start = (page - 1) * page_size
+        end = start + page_size
+        records = queryset[start:end]
+
+        data = []
+        for r in records:
+            data.append({
+                'id': r.id,
+                'source_type': r.source_type,
+                'question_id': r.question_id,
+                'question_content': r.question_content,
+                'question_type': r.question_type,
+                'student_answer': r.student_answer,
+                'correct_answer': r.correct_answer,
+                'is_correct': r.is_correct,
+                'knowledge_point': r.knowledge_point,
+                'created_at': r.created_at.strftime('%Y-%m-%d %H:%M'),
+            })
+
+        return Response({
+            'total': total,
+            'page': page,
+            'page_size': page_size,
+            'results': data,
+        })
+
+    def post(self, request):
+        """保存一条做题记录"""
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        required_fields = ['source_type', 'question_id', 'question_content',
+                           'question_type', 'student_answer', 'correct_answer']
+        for field in required_fields:
+            if field not in request.data:
+                return Response({'error': f'缺少必填字段: {field}'}, status=400)
+
+        record = PracticeRecord.objects.create(
+            student=request.user,
+            source_type=request.data.get('source_type', 'main'),
+            question_id=request.data.get('question_id'),
+            question_content=request.data.get('question_content'),
+            question_type=request.data.get('question_type'),
+            student_answer=request.data.get('student_answer'),
+            correct_answer=request.data.get('correct_answer'),
+            is_correct=request.data.get('is_correct', False),
+            knowledge_point=request.data.get('knowledge_point', ''),
+        )
+
+        return Response({
+            'message': '保存成功',
+            'record_id': record.id,
+        })
 

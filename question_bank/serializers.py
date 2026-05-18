@@ -31,7 +31,7 @@ class QuestionSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'question_type', 'question_type_display', 'content', 'options',
             'answer', 'analysis', 'knowledge_point', 'difficulty', 'difficulty_display',
-            'creator', 'creator_name', 'created_at', 'updated_at'
+            'score', 'creator', 'creator_name', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'creator', 'created_at', 'updated_at']
 
@@ -59,7 +59,7 @@ class QuestionListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'question_type', 'question_type_display', 'content', 'options',
             'knowledge_point', 'difficulty', 'difficulty_display',
-            'creator_name', 'created_at'
+            'score', 'creator_name', 'created_at'
         ]
 
 
@@ -89,8 +89,6 @@ class QuestionCreateSerializer(serializers.ModelSerializer):
         # Convert options array of {key, value} to JSON string
         if 'options' in data and isinstance(data['options'], list):
             data['options'] = json.dumps({o['key']: o['value'] for o in data['options']})
-        # Remove fields not in the model
-        data.pop('score', None)
         return super().to_internal_value(data)
     
     def validate(self, attrs):
@@ -119,7 +117,7 @@ class QuestionCreateSerializer(serializers.ModelSerializer):
         model = Question
         fields = [
             'question_type', 'content', 'options', 'answer',
-            'analysis', 'knowledge_point', 'difficulty'
+            'analysis', 'knowledge_point', 'difficulty', 'score'
         ]
 
 

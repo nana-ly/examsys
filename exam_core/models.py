@@ -141,6 +141,11 @@ class AnswerDetail(models.Model):
 
 class WrongQuestion(models.Model):
     """错题本表"""
+    SOURCE_CHOICES = [
+        ('main', '主题库'),
+        ('ai', 'AI练习库'),
+    ]
+
     student = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -152,8 +157,13 @@ class WrongQuestion(models.Model):
         Question,
         on_delete=models.CASCADE,
         related_name='wrong_by_students',
-        verbose_name='题目'
+        verbose_name='题目',
+        null=True,
+        blank=True
     )
+    source_type = models.CharField('来源', max_length=10, choices=SOURCE_CHOICES, default='main')
+    source_id = models.IntegerField('来源题目ID', null=True, blank=True,
+                                    help_text='source_type=ai时指向question_ai.id')
     wrong_answer = models.TextField('错误答案')
     is_mastered = models.BooleanField('是否掌握', default=False)
     created_at = models.DateTimeField('记录时间', auto_now_add=True)
@@ -163,8 +173,41 @@ class WrongQuestion(models.Model):
         db_table = 'wrong_questions'
         verbose_name = '错题本'
         verbose_name_plural = verbose_name
-        unique_together = ['student', 'question']
         ordering = ['-created_at']
     
     def __str__(self):
-        return f"{self.student.username} - {self.question.content[:30]}"
+        return f"{self.student.username} - {self.question.content[:30] if self.question else 'AI题'}"
+
+
+class PracticeRecord(models.Model):
+    """练习做题记录（每道题单次记录）"""
+    SOURCE_CHOICES = [
+        ('main', '主题库'),
+        ('ai', 'AI练习库'),
+    ]
+
+    student = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='practice_records',
+        limit_choices_to={'role': 'student'},
+        verbose_name='学生'
+    )
+    source_type = models.CharField('来源', max_length=10, choices=SOURCE_CHOICES, default='main')
+    question_id = models.IntegerField('题目ID', help_text='指向question或question_ai的id')
+    question_content = models.TextField('题目内容')
+    question_type = models.CharField('题型', max_length=20)
+    student_answer = models.TextField('学生答案')
+    correct_answer = models.TextField('正确答案')
+    is_correct = models.BooleanField('是否正确', default=False)
+    knowledge_point = models.CharField('知识点', max_length=200, blank=True, null=True)
+    created_at = models.DateTimeField('做题时间', auto_now_add=True)
+
+    class Meta:
+        db_table = 'practice_records'
+        verbose_name = '练习记录'
+        verbose_name_plural = verbose_name
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"{self.student.username} - {self.question_content[:30]}"

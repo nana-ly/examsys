@@ -4,15 +4,12 @@ Django settings for exam project.
 
 import os
 from pathlib import Path
-from dotenv import load_dotenv
-
-load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-SECRET_KEY = os.environ.get('SECRET_KEY', 'django-insecure-pun&w1zk$#9*6()qwswt5bz7be13dd00+x^r(0=i@!ci4qq*lt')
+SECRET_KEY = 'django-insecure-pun&w1zk$#9*6()qwswt5bz7be13dd00+x^r(0=i@!ci4qq*lt'
 
-DEBUG = os.environ.get('DEBUG', 'True') == 'True'
+DEBUG = True
 
 ALLOWED_HOSTS = ['*']
 
@@ -67,11 +64,11 @@ WSGI_APPLICATION = 'exam.wsgi.application'
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.mysql',
-        'NAME': os.environ.get('DB_NAME', 'exam_db'),
-        'USER': os.environ.get('DB_USER', 'exam_user'),
-        'PASSWORD': os.environ.get('DB_PASSWORD', ''),
-        'HOST': os.environ.get('DB_HOST', '127.0.0.1'),
-        'PORT': os.environ.get('DB_PORT', '3306'),
+        'NAME': 'exam_db',
+        'USER': 'exam_user',
+        'PASSWORD': 'MyProject123!',
+        'HOST': 'rm-cn-qnv4s01f40001g4o.rwlb.rds.aliyuncs.com',
+        'PORT': '3306',
         'OPTIONS': {
             'charset': 'utf8mb4',
             'init_command': "SET sql_mode='STRICT_TRANS_TABLES'",
@@ -120,4 +117,4 @@ CORS_ALLOWED_ORIGIN_REGEXES = [
 CORS_ALLOW_CREDENTIALS = True
 
 # Zhipu AI API Key
-ZHIPU_API_KEY = os.environ.get('ZHIPU_API_KEY', '')
+ZHIPU_API_KEY = os.environ.get('ZHIPU_API_KEY', '2b41adce08b540f9b9203b161ac550f5.0x2EeGc6rETQMq51')

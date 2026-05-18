@@ -27,6 +27,7 @@ class Question(models.Model):
     analysis = models.TextField('解析', blank=True, null=True)
     knowledge_point = models.CharField('知识点', max_length=200, blank=True, null=True)
     difficulty = models.IntegerField('难度', choices=DIFFICULTY_CHOICES, default=3)
+    score = models.IntegerField('分值', default=0)
     creator = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,

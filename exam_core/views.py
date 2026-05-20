@@ -272,6 +272,15 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
                     selected.extend(extra)
                     used_ids.update(q.id for q in extra)
 
+        # 如果还不够，从题库中任意题型补充
+        shortage = total_by_type - len(selected)
+        if shortage > 0:
+            extra = list(Question.objects.filter(
+                difficulty__gte=1
+            ).exclude(id__in=used_ids).order_by('?')[:shortage])
+            selected.extend(extra)
+            used_ids.update(q.id for q in extra)
+
         if not selected:
             return Response({'error': '题库中没有符合条件的题目'}, status=status.HTTP_400_BAD_REQUEST)
 

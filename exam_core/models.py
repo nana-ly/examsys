@@ -14,6 +14,7 @@ class ExamPaper(models.Model):
         verbose_name='目标班级'
     )
     total_score = models.DecimalField('总分', max_digits=5, decimal_places=1, default=100)
+    pass_score = models.DecimalField('及格分数', max_digits=5, decimal_places=1, default=60)
     duration = models.IntegerField('时长(分钟)', default=120)
     published_at = models.DateTimeField('发布时间', blank=True, null=True)
     creator = models.ForeignKey(

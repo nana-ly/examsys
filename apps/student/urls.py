@@ -4,7 +4,7 @@ from .views import (
     WrongQuestionListView, WrongQuestionAddView, WrongQuestionMasterView,
     AIQuestionGenerateView, AIQuestionAskView, StartExamView, ReportTabSwitchView,
     PracticeModeView, PracticeKnowledgePointsView, StudyActivityView,
-    PracticeRecordView
+    PracticeRecordView, ProfileView
 )
 
 urlpatterns = [
@@ -26,4 +26,6 @@ urlpatterns = [
     path('practice/records/', PracticeRecordView.as_view(), name='practice-records'),
     # 学习活跃度
     path('activity/', StudyActivityView.as_view(), name='study-activity'),
+    # 学生个人信息
+    path('profile/', ProfileView.as_view(), name='student-profile'),
 ]

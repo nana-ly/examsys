@@ -8,6 +8,7 @@ from django.conf import settings
 import json
 import requests
 import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from exam_core.models import ExamPaper, ExamPaperQuestion, ExamRecord, AnswerDetail, WrongQuestion, PracticeRecord
 from question_bank.models import Question, QuestionAI
@@ -23,12 +24,21 @@ class ExamListView(APIView):
         if not request.user.is_authenticated:
             return Response({'error': '请先登录'}, status=401)
 
-        # 只返回已发布的试卷（published_at 不为空且 <= 当前时间）
-        # 只返回当前学生所在班级的试卷
+        # 查出学生所在的所有班级 ID
+        class_ids = request.user.student_classes.values_list('class_obj_id', flat=True)
+
+        # 查询这些班级的已发布试卷，排除已提交的
+        submitted_paper_ids = ExamRecord.objects.filter(
+            student=request.user,
+            status='submitted'
+        ).exclude(paper_id__isnull=True).values_list('paper_id', flat=True)
+
         queryset = ExamPaper.objects.filter(
             published_at__isnull=False,
             published_at__lte=timezone.now(),
-            target_class__class_students__student=request.user
+            target_class_id__in=class_ids
+        ).exclude(
+            id__in=submitted_paper_ids
         ).distinct().order_by('-published_at')
 
         serializer = ExamListSerializer(queryset, many=True)
@@ -130,6 +140,9 @@ class SubmitAnswerView(APIView):
                 exam_record.score = total_score
                 exam_record.status = 'submitted'
                 exam_record.submitted_at = timezone.now()
+                # 只有在 question_count 未设置时才赋值
+                if not exam_record.question_count:
+                    exam_record.question_count = total_count
                 exam_record.save()
             except ExamRecord.DoesNotExist:
                 return Response({'error': '没有找到进行中的考试记录，请先开始考试'}, status=400)
@@ -328,14 +341,14 @@ class AIQuestionGenerateView(APIView):
         }
         difficulty_cn = diff_map.get(difficulty, '中等')
 
-        # 构建 Prompt (根据题目数量调整)
+        # 构建 Prompt (单题生成)
         is_multiple = (question_type == 'multiple')
         multi_instruction = ''
         if is_multiple:
             multi_instruction = '\n注意：这是**多选题**，必须返回多个正确答案，answer格式如"A,B,C"。如果该知识点无法出多选题，请改为出单选题并设置question_type为"choice"。\n'
 
-        if count == 1:
-            prompt = f"""你是一位资深的网络安全/计算机专业出题老师。
+        # 单题 Prompt 模板
+        single_prompt_template = """你是一位资深的网络安全/计算机专业出题老师。
 
 你需要出一道{question_type_cn}，知识点：「{knowledge_point}」，难度：「{difficulty_cn}」。
 {multi_instruction}
@@ -347,69 +360,67 @@ class AIQuestionGenerateView(APIView):
 
 返回格式：
 {{"content": "题目内容", "question_type": "choice", "options": {{"A": "选项A", "B": "选项B", "C": "选项C", "D": "选项D"}}, "answer": "A", "analysis": "详细解析"}}"""
-        else:
-            prompt = f"""你是一位资深的网络安全/计算机专业出题老师。
 
-你需要出{count}道{question_type_cn}，知识点：「{knowledge_point}」，难度：「{difficulty_cn}」。
-{multi_instruction}
-每道题之间用 "---分隔---" 分隔。
+        def generate_single_question(index):
+            """生成单题的函数，供线程池调用"""
+            prompt = single_prompt_template.format(
+                question_type_cn=question_type_cn,
+                knowledge_point=knowledge_point,
+                difficulty_cn=difficulty_cn,
+                multi_instruction=multi_instruction
+            )
+            
+            api_url = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
+            api_key = settings.ZHIPU_API_KEY
 
-要求：
-1. 每道题要结合实际应用场景，考查理解能力而非死记硬背
-2. 选项要有迷惑性，错误选项要像常见错误答案
-3. 解析要详细（50字以上），解释为什么对、为什么错
-4. 严格按JSON格式返回
+            headers = {
+                'Authorization': f'Bearer {api_key}',
+                'Content-Type': 'application/json'
+            }
 
-返回格式：
-[
-{{"content": "题目1内容", "question_type": "choice", "options": {{"A": "选项A", "B": "选项B", "C": "选项C", "D": "选项D"}}, "answer": "A", "analysis": "详细解析1"}},
-{{"content": "题目2内容", "question_type": "choice", "options": {{"A": "选项A", "B": "选项B", "C": "选项C", "D": "选项D"}}, "answer": "B", "analysis": "详细解析2"}}
-]"""
+            payload = {
+                'model': 'glm-4-flash',
+                'messages': [
+                    {'role': 'user', 'content': prompt}
+                ]
+            }
 
-        # 调用智谱清言 API
-        api_url = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'
-        api_key = settings.ZHIPU_API_KEY
+            try:
+                response = requests.post(api_url, headers=headers, json=payload, timeout=60)
+                response.raise_for_status()
+                result = response.json()
+                content = result['choices'][0]['message']['content']
 
-        headers = {
-            'Authorization': f'Bearer {api_key}',
-            'Content-Type': 'application/json'
-        }
+                # 提取 JSON
+                content = content.strip()
+                if content.startswith('```json'):
+                    content = content[7:]
+                if content.startswith('```'):
+                    content = content[3:]
+                if content.endswith('```'):
+                    content = content[:-3]
 
-        payload = {
-            'model': 'glm-4-flash',
-            'messages': [
-                {'role': 'user', 'content': prompt}
-            ]
-        }
+                question_data = json.loads(content.strip())
+                if not isinstance(question_data, list):
+                    question_data = [question_data]
+                return question_data[0] if question_data else None
+            except Exception as e:
+                print(f"生成第 {index + 1} 题时出错: {str(e)}")
+                return None
 
-        try:
-            response = requests.post(api_url, headers=headers, json=payload, timeout=60)
-            response.raise_for_status()
-            result = response.json()
-            content = result['choices'][0]['message']['content']
+        # 使用 ThreadPoolExecutor 并发调用 AI API（最多3个线程）
+        question_data_list = []
+        max_workers = min(3, count)
+        
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [executor.submit(generate_single_question, i) for i in range(count)]
+            for future in as_completed(futures):
+                result = future.result()
+                if result:
+                    question_data_list.append(result)
 
-            # 提取 JSON
-            content = content.strip()
-            if content.startswith('```json'):
-                content = content[7:]
-            if content.startswith('```'):
-                content = content[3:]
-            if content.endswith('```'):
-                content = content[:-3]
-
-            question_data = json.loads(content.strip())
-
-            # 确保返回的是列表
-            if not isinstance(question_data, list):
-                question_data = [question_data]
-
-            # 限制数量
-            question_data = question_data[:count]
-
-        except json.JSONDecodeError:
-            return Response({'error': 'AI 返回格式错误'}, status=500)
-        except Exception as e:
-            return Response({'error': f'AI 调用失败: {str(e)}'}, status=500)
+        if not question_data_list:
+            return Response({'error': 'AI 生成题目全部失败'}, status=500)
 
         # 根据 target_library 选择存储的表
         is_ai_practice = target_library == 'ai_practice'
@@ -425,7 +436,7 @@ class AIQuestionGenerateView(APIView):
 
         # 保存到数据库并构建返回数据
         questions_list = []
-        for q_data in question_data:
+        for q_data in question_data_list:
             # 优先使用AI返回的question_type，否则用请求的type
             ai_type = q_data.get('question_type', frontend_question_type)
             final_type = ai_type_map_reverse.get(ai_type, frontend_question_type)
@@ -816,26 +827,46 @@ class StudyActivityView(APIView):
             submitted_at__date__lte=end_date
         )
 
+        # 查询练习记录数量（用于计算练习题目）
+        from exam_core.models import PracticeRecord
+        practice_count_map = {}
+        practice_records_all = PracticeRecord.objects.filter(
+            student=request.user,
+            created_at__date__gte=start_date,
+            created_at__date__lte=end_date
+        ).values('created_at__date').annotate(count=Count('id'))
+        for item in practice_records_all:
+            practice_count_map[item['created_at__date']] = item['count']
+
         # 按日期分组统计
         activity_data = []
         current_date = start_date
 
         while current_date <= end_date:
             day_records = records.filter(submitted_at__date=current_date)
+            day_record_list = list(day_records)
 
-            # 统计题目数量：如果 question_count 字段有值则累加，否则统计记录数
-            total_questions = day_records.aggregate(
-                total=Sum('question_count')
-            )['total'] or 0
+            # 统计考试题目数量
+            exam_questions = 0
+            # 先尝试累加 question_count > 0 的记录
+            for record in day_record_list:
+                if record.question_count and record.question_count > 0:
+                    exam_questions += record.question_count
+            
+            # 如果没有 question_count > 0 的记录，用考试次数统计
+            if exam_questions == 0:
+                exam_questions = len(day_record_list)
 
-            # 如果 total_questions 为 0（可能是旧数据没有 question_count），用记录数
-            if total_questions == 0:
-                total_questions = day_records.count()
+            # 练习模式：每次练习默认 5 题
+            practice_count = practice_count_map.get(current_date, 0)
+            practice_questions = practice_count * 5
+
+            total_questions = exam_questions + practice_questions
 
             avg_score = 0.0
-            if day_records.count() > 0:
-                avg_score = day_records.aggregate(Avg('score'))['score__avg'] or 0.0
-                avg_score = round(float(avg_score), 1)
+            if day_record_list:
+                avg_score = sum(r.score or 0 for r in day_record_list) / len(day_record_list)
+                avg_score = round(avg_score, 1)
 
             activity_data.append({
                 'date': current_date.strftime('%Y-%m-%d'),
@@ -853,49 +884,65 @@ class PracticeRecordView(APIView):
     permission_classes = []
 
     def get(self, request):
-        """获取做题记录（按分页）"""
+        """获取做题记录（考试和练习的汇总记录，按分页）"""
         if not request.user.is_authenticated:
             return Response({'error': '请先登录'}, status=401)
 
         page = int(request.query_params.get('page', 1))
         page_size = int(request.query_params.get('page_size', 10))
-        date_from = request.query_params.get('date_from')
-        date_to = request.query_params.get('date_to')
 
-        queryset = PracticeRecord.objects.filter(student=request.user)
+        # 查询已提交的考试记录
+        exam_records = ExamRecord.objects.filter(
+            student=request.user,
+            status__in=['submitted', 'graded']
+        ).order_by('-submitted_at')
 
-        if date_from:
-            queryset = queryset.filter(created_at__date__gte=date_from)
-        if date_to:
-            queryset = queryset.filter(created_at__date__lte=date_to)
+        # 查询练习记录
+        practice_records = PracticeRecord.objects.filter(
+            student=request.user
+        ).order_by('-created_at')
 
-        queryset = queryset.order_by('-created_at')
+        # 合并记录
+        combined_data = []
 
-        total = queryset.count()
+        for r in exam_records:
+            combined_data.append({
+                'id': r.id,
+                'type': 'exam',
+                'record_type': '考试',
+                'date': r.submitted_at.strftime('%Y-%m-%d') if r.submitted_at else '',
+                'datetime': r.submitted_at.strftime('%Y-%m-%d %H:%M') if r.submitted_at else '',
+                'question_count': r.question_count or 0,
+                'score': r.score or 0,
+                'paper_name': r.paper.name if r.paper else 'AI练习' if r.is_practice else '练习',
+            })
+
+        for r in practice_records:
+            combined_data.append({
+                'id': r.id,
+                'type': 'practice',
+                'record_type': '练习',
+                'date': r.created_at.strftime('%Y-%m-%d') if r.created_at else '',
+                'datetime': r.created_at.strftime('%Y-%m-%d %H:%M') if r.created_at else '',
+                'question_count': 1,
+                'score': 100 if r.is_correct else 0,
+                'paper_name': r.question_content[:20] + '...' if r.question_content and len(r.question_content) > 20 else r.question_content or '练习',
+            })
+
+        # 按时间倒序排列
+        combined_data.sort(key=lambda x: x['datetime'], reverse=True)
+
+        # 分页
+        total = len(combined_data)
         start = (page - 1) * page_size
         end = start + page_size
-        records = queryset[start:end]
-
-        data = []
-        for r in records:
-            data.append({
-                'id': r.id,
-                'source_type': r.source_type,
-                'question_id': r.question_id,
-                'question_content': r.question_content,
-                'question_type': r.question_type,
-                'student_answer': r.student_answer,
-                'correct_answer': r.correct_answer,
-                'is_correct': r.is_correct,
-                'knowledge_point': r.knowledge_point,
-                'created_at': r.created_at.strftime('%Y-%m-%d %H:%M'),
-            })
+        paged_data = combined_data[start:end]
 
         return Response({
             'total': total,
             'page': page,
             'page_size': page_size,
-            'results': data,
+            'results': paged_data,
         })
 
     def post(self, request):
@@ -925,4 +972,123 @@ class PracticeRecordView(APIView):
             'message': '保存成功',
             'record_id': record.id,
         })
+
+
+class ProfileView(APIView):
+    """学生个人信息"""
+    permission_classes = []
+
+    def get(self, request):
+        """获取当前登录学生的基本信息"""
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        user = request.user
+        # 获取学生所在班级
+        classes = user.student_classes.all()
+        class_names = [sc.class_obj.name for sc in classes]
+
+        # 统计考试次数（is_practice=False, status='submitted'）
+        total_exams = ExamRecord.objects.filter(
+            student=user,
+            is_practice=False,
+            status='submitted'
+        ).count()
+
+        # 统计练习次数（is_practice=True, status='submitted'）
+        total_practice = ExamRecord.objects.filter(
+            student=user,
+            is_practice=True,
+            status='submitted'
+        ).count()
+
+        # 统计错题总数（is_mastered=False）
+        total_wrong = WrongQuestion.objects.filter(
+            student=user,
+            is_mastered=False
+        ).count()
+
+        # 统计已掌握错题数（is_mastered=True）
+        mastered_wrong = WrongQuestion.objects.filter(
+            student=user,
+            is_mastered=True
+        ).count()
+
+        # 计算平均分
+        from django.db.models import Avg
+        avg_score_data = ExamRecord.objects.filter(
+            student=user,
+            status__in=['submitted', 'graded']
+        ).aggregate(avg_score=Avg('score'))
+        avg_score = round(avg_score_data['avg_score'] or 0, 1)
+
+        # 统计有记录的天数（按日期去重）
+        from django.db.models.functions import TruncDate
+        exam_dates = ExamRecord.objects.filter(
+            student=user,
+            status__in=['submitted', 'graded'],
+            submitted_at__isnull=False
+        ).annotate(date=TruncDate('submitted_at')).values('date').distinct()
+        practice_dates = PracticeRecord.objects.filter(
+            student=user
+        ).annotate(date=TruncDate('created_at')).values('date').distinct()
+        all_dates = set()
+        for d in exam_dates:
+            if d['date']:
+                all_dates.add(d['date'])
+        for d in practice_dates:
+            if d['date']:
+                all_dates.add(d['date'])
+        study_days = len(all_dates)
+
+        # 计算正确率：正确的题数 ÷ 总做题数 × 100
+        from django.db.models import Count, Q
+        answer_stats = AnswerDetail.objects.filter(
+            record__student=user,
+            record__status__in=['submitted', 'graded']
+        ).aggregate(
+            total=Count('id'),
+            correct=Count('id', filter=Q(is_correct=True))
+        )
+        total_answers = answer_stats['total'] or 0
+        correct_answers = answer_stats['correct'] or 0
+        correct_rate = round((correct_answers / total_answers * 100) if total_answers > 0 else 0, 1)
+
+        # 计算学习时长（小时）：累加 started_at 到 submitted_at 的差值
+        from django.db.models import Sum, F, ExpressionWrapper, DurationField
+        from django.db.models.functions import Coalesce
+        exam_records = ExamRecord.objects.filter(
+            student=user,
+            status__in=['submitted', 'graded'],
+            started_at__isnull=False,
+            submitted_at__isnull=False
+        ).annotate(
+            duration=ExpressionWrapper(
+                F('submitted_at') - F('started_at'),
+                output_field=DurationField()
+            )
+        )
+        total_seconds = 0
+        for record in exam_records:
+            if record.duration:
+                total_seconds += record.duration.total_seconds()
+        study_hours = round(total_seconds / 3600, 1)
+
+        return Response({
+            'id': user.id,
+            'username': user.username,
+            'real_name': user.real_name,
+            'email': user.email,
+            'school': '',
+            'classes': class_names,
+            'total_exams': total_exams,
+            'total_practice': total_practice,
+            'total_wrong': total_wrong,
+            'mastered_wrong': mastered_wrong,
+            'avg_score': avg_score,
+            'study_days': study_days,
+            'correct_rate': correct_rate,
+            'study_hours': study_hours,
+        })
+
 

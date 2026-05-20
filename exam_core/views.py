@@ -169,7 +169,7 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
 
         if isinstance(type_distribution, dict) and type_distribution:
             # raw data JSON 路径 — 直接用解析后的数据
-            name = data.get('name')
+            name = data.get('name', '').strip()
             target_class_id = data.get('target_class')
             total_score = int(data.get('total_score', 100) or 100)
             pass_score = int(data.get('pass_score', 60) or 60)
@@ -178,6 +178,12 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
             if end_time and isinstance(end_time, str):
                 from django.utils.dateparse import parse_datetime
                 end_time = parse_datetime(end_time)
+            
+            # 验证必填字段
+            if not name:
+                return Response({'error': '请填写试卷名称'}, status=status.HTTP_400_BAD_REQUEST)
+            if not target_class_id:
+                return Response({'error': '请选择目标班级'}, status=status.HTTP_400_BAD_REQUEST)
         else:
             # HTML 表单路径 — 用序列化器校验
             serializer = AutoGenerateSerializer(data=data)
@@ -197,6 +203,8 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
             target_class = Class.objects.get(id=target_class_id)
         except Class.DoesNotExist:
             return Response({'error': '班级不存在'}, status=status.HTTP_404_NOT_FOUND)
+        except (ValueError, TypeError):
+            return Response({'error': '班级ID格式无效'}, status=status.HTTP_400_BAD_REQUEST)
 
         if request.user.role not in ['teacher', 'admin'] or \
            (request.user.role == 'teacher' and target_class.teacher != request.user):
@@ -204,8 +212,11 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
 
         import random
 
-        type_counts = {k: int(v) for k, v in type_distribution.items() if int(v) > 0}
-        diff_counts = {int(k): int(v) for k, v in difficulty_distribution.items() if int(v) > 0} if difficulty_distribution else {}
+        try:
+            type_counts = {k: int(v) for k, v in type_distribution.items() if int(v) > 0}
+            diff_counts = {int(k): int(v) for k, v in difficulty_distribution.items() if int(v) > 0} if difficulty_distribution else {}
+        except (ValueError, TypeError) as e:
+            return Response({'error': f'题型分布数据格式错误: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
         total_by_type = sum(type_counts.values())
         total_by_diff = sum(diff_counts.values()) if diff_counts else total_by_type
@@ -236,12 +247,15 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
         used_ids = set()
 
         for (qtype, diff), target in targets.items():
-            candidates = Question.objects.filter(question_type=qtype)
-            if diff is not None:
-                candidates = candidates.filter(difficulty=diff)
-            candidates = list(candidates.exclude(id__in=used_ids).order_by('?')[:target])
-            selected.extend(candidates)
-            used_ids.update(q.id for q in candidates)
+            try:
+                candidates = Question.objects.filter(question_type=qtype)
+                if diff is not None:
+                    candidates = candidates.filter(difficulty=diff)
+                candidates = list(candidates.exclude(id__in=used_ids).order_by('?')[:target])
+                selected.extend(candidates)
+                used_ids.update(q.id for q in candidates)
+            except Exception as e:
+                return Response({'error': f'查询题目时出错: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
         # 如果某些 bucket 不足，从同题型其他难度补充
         shortage = total_by_type - len(selected)
@@ -262,17 +276,21 @@ class ExamPaperViewSet(viewsets.ModelViewSet):
             return Response({'error': '题库中没有符合条件的题目'}, status=status.HTTP_400_BAD_REQUEST)
 
         question_count = len(selected)
+        if question_count == 0:
+            return Response({'error': '未能抽取到任何题目'}, status=status.HTTP_400_BAD_REQUEST)
+        
         score_per_question = round(total_score / question_count, 1)
 
-        paper = ExamPaper.objects.create(
-            name=name,
-            target_class=target_class,
-            total_score=total_score,
-            pass_score=pass_score,
-            duration=duration,
-            end_time=end_time,
-            creator=request.user
-        )
+        try:
+            paper = ExamPaper.objects.create(
+                name=name,
+                target_class=target_class,
+                total_score=total_score,
+                duration=duration,
+                creator=request.user
+            )
+        except Exception as e:
+            return Response({'error': f'创建试卷失败: {str(e)}'}, status=status.HTTP_400_BAD_REQUEST)
 
         for order, question in enumerate(selected):
             ExamPaperQuestion.objects.create(

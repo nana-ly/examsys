@@ -14,19 +14,30 @@ from .serializers import (
 
 
 class UserViewSet(viewsets.ModelViewSet):
-    """用户管理视图集"""
+    """用户管理视图集 — 仅用于查询学生"""
     queryset = User.objects.all().order_by('-date_joined')
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['username', 'real_name', 'phone']
     ordering_fields = ['date_joined', 'username']
-    
+
     def get_serializer_class(self):
         if self.action == 'list':
             return UserListSerializer
         return UserSerializer
-    
+
+    def get_queryset(self):
+        qs = User.objects.filter(role='student').order_by('-date_joined')
+        # 排除已在目标班级的学生
+        exclude_class = self.request.query_params.get('exclude_class')
+        if exclude_class:
+            existing_ids = StudentClass.objects.filter(
+                class_obj_id=exclude_class
+            ).values_list('student_id', flat=True)
+            qs = qs.exclude(id__in=existing_ids)
+        return qs
+
     def get_permissions(self):
         if self.action in ['retrieve', 'update', 'partial_update']:
             return [IsAuthenticated()]

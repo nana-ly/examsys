@@ -19,7 +19,13 @@ class AuthViewSet(viewsets.GenericViewSet):
     
     @action(detail=False, methods=['post'])
     def register(self, request):
-        """用户注册"""
+        """用户注册（教师注册已关闭，仅限学生自助注册）"""
+        role = request.data.get('role', 'student')
+        if role == 'teacher':
+            return Response(
+                {'error': '教师账号由管理员统一创建，不开放自主注册，请联系管理员'},
+                status=status.HTTP_403_FORBIDDEN
+            )
         serializer = UserRegisterSerializer(data=request.data)
         if serializer.is_valid():
             user = serializer.save()

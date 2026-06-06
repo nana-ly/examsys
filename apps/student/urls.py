@@ -4,7 +4,7 @@ from .views import (
     WrongQuestionListView, WrongQuestionAddView, WrongQuestionMasterView,
     AIQuestionGenerateView, AIQuestionAskView, StartExamView, SaveProgressView, ReportTabSwitchView,
     PracticeModeView, PracticeKnowledgePointsView, StudyActivityView,
-    PracticeRecordView, ProfileView
+    PracticeRecordView, ProfileView, ChangePasswordView, ForgotPasswordView
 )
 
 urlpatterns = [
@@ -29,4 +29,8 @@ urlpatterns = [
     path('activity/', StudyActivityView.as_view(), name='study-activity'),
     # 学生个人信息
     path('profile/', ProfileView.as_view(), name='student-profile'),
+    # 修改密码
+    path('change_password/', ChangePasswordView.as_view(), name='change-password'),
+    # 忘记密码
+    path('forgot_password/', ForgotPasswordView.as_view(), name='forgot-password'),
 ]

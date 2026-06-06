@@ -223,6 +223,34 @@ class WrongQuestionAddView(APIView):
         if not request.user.is_authenticated:
             return Response({'error': '请先登录'}, status=401)
 
+        # 手动添加错题：支持传入原始题目数据（content + answer）来创建新 Question
+        content = request.data.get('content', '').strip()
+        correct_answer = request.data.get('answer', '').strip()
+        if content and correct_answer:
+            question_type = request.data.get('question_type', 'choice')
+            wrong_answer = request.data.get('wrong_answer', '')
+            knowledge_point = request.data.get('knowledge_point', '')
+            analysis = request.data.get('analysis', '')
+
+            question = Question.objects.create(
+                question_type=question_type,
+                content=content,
+                answer=correct_answer,
+                knowledge_point=knowledge_point,
+                analysis=analysis,
+                created_by=request.user
+            )
+
+            WrongQuestion.objects.create(
+                student=request.user,
+                question=question,
+                source_type='main',
+                source_id=question.id,
+                wrong_answer=wrong_answer,
+                is_mastered=False
+            )
+            return Response({'message': '已添加到错题本', 'question_id': question.id})
+
         question_id = request.data.get('question_id')
         source_type = request.data.get('source_type', 'main')
         wrong_answer = request.data.get('wrong_answer', '')
@@ -1139,6 +1167,7 @@ class ProfileView(APIView):
             'username': user.username,
             'real_name': user.real_name,
             'email': user.email,
+            'phone': user.phone,
             'school': '',
             'classes': class_names,
             'total_exams': total_exams,
@@ -1150,5 +1179,108 @@ class ProfileView(APIView):
             'correct_rate': correct_rate,
             'study_hours': study_hours,
         })
+
+    def put(self, request):
+        """更新当前登录学生的个人信息（真实姓名、手机号、邮箱）"""
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        user = request.user
+        real_name = (request.data.get('real_name') or '').strip()
+        phone = (request.data.get('phone') or '').strip()
+        email = (request.data.get('email') or '').strip()
+
+        if not real_name:
+            return Response({'error': '真实姓名不能为空'}, status=400)
+
+        user.real_name = real_name
+        user.phone = phone or ''
+        user.email = email or ''
+        user.save(update_fields=['real_name', 'phone', 'email'])
+
+        return Response({
+            'message': '个人信息更新成功',
+            'real_name': user.real_name,
+            'phone': user.phone,
+            'email': user.email,
+        })
+
+
+class ChangePasswordView(APIView):
+    """修改密码（需要旧密码）"""
+    permission_classes = []
+
+    def post(self, request):
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        user = request.user
+        old_password = request.data.get('old_password', '')
+        new_password = request.data.get('new_password', '')
+        confirm_password = request.data.get('confirm_password', '')
+
+        if not old_password:
+            return Response({'error': '请输入旧密码'}, status=400)
+        if not new_password:
+            return Response({'error': '请输入新密码'}, status=400)
+        if len(new_password) < 6:
+            return Response({'error': '新密码至少需要6位'}, status=400)
+        if new_password != confirm_password:
+            return Response({'error': '两次输入的新密码不一致'}, status=400)
+
+        if not user.check_password(old_password):
+            return Response({'error': '旧密码不正确'}, status=400)
+
+        user.set_password(new_password)
+        user.save()
+
+        return Response({'message': '密码修改成功，请重新登录'})
+
+
+class ForgotPasswordView(APIView):
+    """忘记密码 - 通过用户名和邮箱重置密码（不登录状态可用）"""
+    permission_classes = []
+
+    def post(self, request):
+        action = request.data.get('action', 'reset').strip()
+        username = request.data.get('username', '').strip()
+        email = request.data.get('email', '').strip()
+        new_password = request.data.get('new_password', '')
+        confirm_password = request.data.get('confirm_password', '')
+
+        if not username:
+            return Response({'error': '请输入用户名'}, status=400)
+
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        try:
+            user = User.objects.get(username=username)
+        except User.DoesNotExist:
+            return Response({'error': '用户名不存在'}, status=404)
+
+        if email and user.email and user.email.strip().lower() != email.strip().lower():
+            return Response({'error': '邮箱与账号不匹配'}, status=400)
+
+        if action == 'verify':
+            return Response({
+                'message': '身份验证通过',
+                'username': user.username,
+            })
+
+        if not new_password:
+            return Response({'error': '请输入新密码'}, status=400)
+        if len(new_password) < 6:
+            return Response({'error': '新密码至少需要6位'}, status=400)
+        if new_password != confirm_password:
+            return Response({'error': '两次输入的新密码不一致'}, status=400)
+
+        user.set_password(new_password)
+        user.save()
+
+        return Response({'message': '密码重置成功，请使用新密码登录'})
+
+
+
+
 
 

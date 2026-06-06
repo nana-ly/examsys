@@ -64,3 +64,31 @@ class AuthViewSet(viewsets.GenericViewSet):
     def me(self, request):
         """获取当前用户信息"""
         return Response(UserSerializer(request.user).data)
+
+    @action(detail=False, methods=['patch'], permission_classes=[IsAuthenticated])
+    def me_update(self, request):
+        """更新当前用户个人信息（教师和学生通用）"""
+        import re
+        user = request.user
+        real_name = (request.data.get('real_name') or '').strip()
+        phone = (request.data.get('phone') or '').strip()
+        email = (request.data.get('email') or '').strip()
+
+        if not real_name:
+            return Response({'error': '真实姓名不能为空'}, status=400)
+        if phone and not re.match(r'^1[3-9]\d{9}$', phone):
+            return Response({'error': '手机号格式不正确'}, status=400)
+        if email and not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+            return Response({'error': '邮箱格式不正确'}, status=400)
+
+        user.real_name = real_name
+        user.phone = phone or ''
+        user.email = email or ''
+        user.save(update_fields=['real_name', 'phone', 'email'])
+
+        return Response({
+            'message': '个人信息更新成功',
+            'real_name': user.real_name,
+            'phone': user.phone,
+            'email': user.email,
+        })

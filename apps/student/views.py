@@ -3,14 +3,14 @@ from rest_framework.response import Response
 from django.utils import timezone
 from django.http import Http404
 from django.db import transaction
-from django.db.models import Count
+from django.db.models import Count, Q, Sum
 from django.conf import settings
 import json
 import requests
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from exam_core.models import ExamPaper, ExamPaperQuestion, ExamRecord, AnswerDetail, WrongQuestion, PracticeRecord
+from exam_core.models import ExamPaper, ExamPaperQuestion, ExamRecord, AnswerDetail, WrongQuestion, PracticeRecord, StudySession
 from question_bank.models import Question, QuestionAI
 from .serializers import ExamListSerializer, ExamDetailSerializer, WrongQuestionSerializer
 
@@ -194,24 +194,52 @@ class WrongQuestionListView(APIView):
         if mastered is not None:
             queryset = queryset.filter(is_mastered=mastered.lower() == 'true')
 
+        # 按题型筛选
+        question_type = request.query_params.get('question_type')
+        if question_type:
+            queryset = queryset.filter(question__question_type=question_type)
+
         # 按知识点筛选
         knowledge_point = request.query_params.get('knowledge_point')
         if knowledge_point:
             queryset = queryset.filter(question__knowledge_point=knowledge_point)
 
+        # 按关键词搜索
+        keyword = request.query_params.get('keyword')
+        if keyword:
+            queryset = queryset.filter(
+                Q(question__content__icontains=keyword) |
+                Q(question__knowledge_point__icontains=keyword)
+            )
+
         queryset = queryset.order_by('-created_at')
 
         # summary 模式：只返回数量统计，不返回全量数据（首页只需要错题数）
         if request.query_params.get('summary') == 'true':
-            total = queryset.count()
-            unmastered_count = queryset.filter(is_mastered=False).count() if mastered is None else 0
+            base_qs = WrongQuestion.objects.filter(student=request.user)
             return Response({
-                'total': total,
-                'unmastered_count': unmastered_count,
+                'total': base_qs.count(),
+                'mastered_count': base_qs.filter(is_mastered=True).count(),
+                'unmastered_count': base_qs.filter(is_mastered=False).count(),
             })
 
-        serializer = WrongQuestionSerializer(queryset, many=True)
-        return Response(serializer.data)
+        total = queryset.count()
+        mastered_count = queryset.filter(is_mastered=True).count()
+        unmastered_count = queryset.filter(is_mastered=False).count()
+        page = int(request.query_params.get('page', 1))
+        page_size = int(request.query_params.get('page_size', 20))
+        start = (page - 1) * page_size
+        paged = queryset[start:start + page_size]
+
+        serializer = WrongQuestionSerializer(paged, many=True)
+        return Response({
+            'total': total,
+            'mastered_count': mastered_count,
+            'unmastered_count': unmastered_count,
+            'page': page,
+            'page_size': page_size,
+            'results': serializer.data,
+        })
 
 
 class WrongQuestionAddView(APIView):
@@ -811,27 +839,27 @@ class PracticeModeView(APIView):
             return Response({'error': '请提交答案'}, status=400)
 
         # 3. 构建答案字典
-        answer_dict = {item['question_id']: item['answer'] for item in answers}
+        answers_dict = {item['question_id']: item.get('answer', '') for item in answers}
 
         # 4. 获取题目并批改
-        question_ids = list(answer_dict.keys())
+        question_ids = list(answers_dict.keys())
         questions = Question.objects.filter(id__in=question_ids)
         question_map = {q.id: q for q in questions}
 
-        correct_count = 0
         total_count = len(question_ids)
+        correct_count = 0
         details = []
 
-        for q_id, student_answer in answer_dict.items():
+        for q_id, student_answer in answers_dict.items():
             question = question_map.get(q_id)
             if question is None:
                 continue
-
-            # 比较答案
-            is_correct = str(student_answer).strip().upper() == str(question.answer).strip().upper()
+            if not student_answer:
+                is_correct = False
+            else:
+                is_correct = str(student_answer).strip() == str(question.answer).strip()
             if is_correct:
                 correct_count += 1
-
             details.append({
                 'question_id': question.id,
                 'content': question.content,
@@ -840,23 +868,51 @@ class PracticeModeView(APIView):
                 'analysis': question.analysis or ''
             })
 
-        # 计算得分
+        # 正确率
         accuracy = round(correct_count / total_count * 100, 1) if total_count > 0 else 0
 
-        # 5. 创建练习记录（用于学习统计）
-        try:
+        # 5. 创建练习记录和答题详情
+        with transaction.atomic():
             exam_record = ExamRecord.objects.create(
                 student=request.user,
-                paper=None,  # 练习不关联特定试卷
+                paper=None,
                 score=accuracy,
                 status='submitted',
                 submitted_at=timezone.now(),
                 is_practice=True,
                 question_count=total_count
             )
-        except Exception as e:
-            # 记录创建失败不影响答题反馈返回
-            print(f"创建练习记录失败: {e}")
+
+            # 创建 AnswerDetail，按前端发送顺序保存（保证历史记录顺序一致）
+            for q_id in question_ids:
+                q = question_map.get(q_id)
+                if not q:
+                    continue
+                student_answer = answers_dict.get(q_id, '')
+                if not student_answer:
+                    student_answer = '未作答'
+                    is_correct = False
+                else:
+                    is_correct = str(student_answer).strip() == str(q.answer).strip()
+                AnswerDetail.objects.create(
+                    record=exam_record,
+                    question=q,
+                    student_answer=str(student_answer),
+                    is_correct=is_correct
+                )
+
+            # 添加错题到错题本
+            for q_id in question_ids:
+                q = question_map.get(q_id)
+                if not q:
+                    continue
+                student_answer = answers_dict.get(q_id, '')
+                is_correct = str(student_answer).strip() == str(q.answer).strip()
+                if not is_correct:
+                    WrongQuestion.objects.get_or_create(
+                        student=request.user,
+                        question=q
+                    )
 
         return Response({
             'total': total_count,
@@ -892,22 +948,61 @@ class PracticeKnowledgePointsView(APIView):
 
 
 class StudyActivityView(APIView):
-    """学生学习活跃度数据 - 用于 ECharts 热力图"""
+    """学生学习活跃度数据 - 按月展示的日历热力图"""
     permission_classes = []
 
     def get(self, request):
-        """返回过去 30 天每天的题目数量和平均得分"""
+        """支持 ?year=2026&month=5 筛选某月，?months=6 按月汇总，默认返回注册至今全部数据"""
         if not request.user.is_authenticated:
             return Response({'error': '请先登录'}, status=401)
 
-        from datetime import timedelta
-        from django.db.models import Avg, Sum
+        from datetime import timedelta, datetime
+        from django.db.models import Count, Sum
+        import calendar
 
-        # 计算过去 30 天的日期范围
-        end_date = timezone.now().date()
-        start_date = end_date - timedelta(days=29)
+        year = request.query_params.get('year')
+        month = request.query_params.get('month')
+        months = request.query_params.get('months')
 
-        # 查询已提交的考试记录
+        if months:
+            months = int(months)
+            end_date = timezone.now().date()
+            start_date = (end_date.replace(day=1) - timedelta(days=1)).replace(day=1)
+            for _ in range(months - 1):
+                start_date = (start_date - timedelta(days=1)).replace(day=1)
+
+            from django.db.models.functions import TruncMonth
+            month_stats = AnswerDetail.objects.filter(
+                record__student=request.user,
+                record__status__in=['submitted', 'graded'],
+                record__submitted_at__date__gte=start_date,
+                record__submitted_at__date__lte=end_date
+            ).annotate(month=TruncMonth('record__submitted_at')).values('month').annotate(
+                total=Count('id')
+            ).order_by('month')
+
+            stats_map = {item['month'].strftime('%Y-%m'): item['total'] for item in month_stats}
+            monthly = []
+            cursor = start_date
+            while cursor <= end_date:
+                month_key = cursor.strftime('%Y-%m')
+                monthly.append({'month': month_key, 'label': f"{cursor.month}月", 'count': stats_map.get(month_key, 0)})
+                if cursor.month == 12:
+                    cursor = cursor.replace(year=cursor.year + 1, month=1)
+                else:
+                    cursor = cursor.replace(month=cursor.month + 1)
+            return Response(monthly)
+
+        if year and month:
+            year = int(year)
+            month = int(month)
+            start_date = datetime(year, month, 1).date()
+            _, last_day = calendar.monthrange(year, month)
+            end_date = datetime(year, month, last_day).date()
+        else:
+            end_date = timezone.now().date()
+            start_date = request.user.date_joined.date()
+
         records = ExamRecord.objects.filter(
             student=request.user,
             status__in=['submitted', 'graded'],
@@ -915,54 +1010,48 @@ class StudyActivityView(APIView):
             submitted_at__date__lte=end_date
         )
 
-        # 查询练习记录数量（用于计算练习题目）
-        from exam_core.models import PracticeRecord
-        practice_count_map = {}
-        practice_records_all = PracticeRecord.objects.filter(
-            student=request.user,
-            created_at__date__gte=start_date,
-            created_at__date__lte=end_date
-        ).values('created_at__date').annotate(count=Count('id'))
-        for item in practice_records_all:
-            practice_count_map[item['created_at__date']] = item['count']
+        from django.db.models.functions import TruncDate
+        answer_daily = AnswerDetail.objects.filter(
+            record__student=request.user,
+            record__status__in=['submitted', 'graded'],
+            record__submitted_at__date__gte=start_date,
+            record__submitted_at__date__lte=end_date
+        ).annotate(day=TruncDate('record__submitted_at')).values('day').annotate(
+            total=Count('id'),
+            correct=Count('id', filter=Q(is_correct=True))
+        ).order_by('day')
 
-        # 按日期分组统计
+        answer_map = {item['day']: item for item in answer_daily}
         activity_data = []
         current_date = start_date
 
         while current_date <= end_date:
             day_records = records.filter(submitted_at__date=current_date)
             day_record_list = list(day_records)
-
-            # 统计考试题目数量
-            exam_questions = 0
-            # 先尝试累加 question_count > 0 的记录
-            for record in day_record_list:
-                if record.question_count and record.question_count > 0:
-                    exam_questions += record.question_count
-            
-            # 如果没有 question_count > 0 的记录，用考试次数统计
-            if exam_questions == 0:
-                exam_questions = len(day_record_list)
-
-            # 练习模式：每次练习默认 5 题
-            practice_count = practice_count_map.get(current_date, 0)
-            practice_questions = practice_count * 5
-
-            total_questions = exam_questions + practice_questions
-
+            day_stats = answer_map.get(current_date, {'total': 0, 'correct': 0})
+            total_questions = day_stats['total']
+            correct_questions = day_stats['correct']
+            correct_rate = round(correct_questions / total_questions * 100, 1) if total_questions > 0 else 0
             avg_score = 0.0
             if day_record_list:
                 avg_score = sum(r.score or 0 for r in day_record_list) / len(day_record_list)
                 avg_score = round(avg_score, 1)
-
             activity_data.append({
                 'date': current_date.strftime('%Y-%m-%d'),
                 'count': total_questions,
-                'avg_score': avg_score
+                'avg_score': avg_score,
+                'correct_rate': correct_rate,
             })
-
             current_date += timedelta(days=1)
+
+        if not (year and month):
+            from datetime import datetime as dt
+            today_start = dt.combine(timezone.now().date(), dt.min.time())
+            today_end = dt.combine(timezone.now().date(), dt.max.time())
+            session_dur = StudySession.objects.filter(
+                user=request.user, start_time__gte=today_start, start_time__lte=today_end
+            ).aggregate(total=Sum('duration'))['total'] or 0
+            return Response({'data': activity_data, 'today_duration': session_dur})
 
         return Response(activity_data)
 
@@ -977,23 +1066,25 @@ class PracticeRecordView(APIView):
             return Response({'error': '请先登录'}, status=401)
 
         page = int(request.query_params.get('page', 1))
-        page_size = int(request.query_params.get('page_size', 10))
+        page_size = int(request.query_params.get('page_size', 5))
+        record_type = request.query_params.get('record_type')
 
-        # 查询已提交的考试记录
-        exam_records = ExamRecord.objects.filter(
+        base_qs = ExamRecord.objects.filter(
             student=request.user,
             status__in=['submitted', 'graded']
-        ).order_by('-submitted_at')
+        ).select_related('paper', 'student')
 
-        # 查询练习记录
-        practice_records = PracticeRecord.objects.filter(
-            student=request.user
-        ).order_by('-created_at')
+        if record_type == 'exam':
+            base_qs = base_qs.filter(is_practice=False)
+        elif record_type == 'practice':
+            base_qs = base_qs.filter(is_practice=True)
 
-        # 合并记录
+        exam_qs = base_qs.filter(is_practice=False).order_by('-submitted_at') if record_type in (None, 'exam') else base_qs.none()
+        practice_qs = base_qs.filter(is_practice=True).order_by('-submitted_at') if record_type in (None, 'practice') else base_qs.none()
+
         combined_data = []
 
-        for r in exam_records:
+        for r in exam_qs:
             combined_data.append({
                 'id': r.id,
                 'type': 'exam',
@@ -1001,26 +1092,40 @@ class PracticeRecordView(APIView):
                 'date': r.submitted_at.strftime('%Y-%m-%d') if r.submitted_at else '',
                 'datetime': r.submitted_at.strftime('%Y-%m-%d %H:%M') if r.submitted_at else '',
                 'question_count': r.question_count or 0,
-                'score': r.score or 0,
-                'paper_name': r.paper.name if r.paper else 'AI练习' if r.is_practice else '练习',
+                'score': float(r.score) if r.score else 0,
+                'paper_name': r.paper.name if r.paper else '考试',
             })
 
-        for r in practice_records:
+        practice_list = list(practice_qs)
+        first_question_map = {}
+        if practice_list:
+            practice_ids = [r.id for r in practice_list]
+            all_details = AnswerDetail.objects.filter(
+                record_id__in=practice_ids
+            ).select_related('question').order_by('record_id', 'id')
+            seen = set()
+            for d in all_details:
+                if d.record_id not in seen:
+                    seen.add(d.record_id)
+                    content = d.question.content or ''
+                    first_question_map[d.record_id] = (content[:20] + '...') if len(content) > 20 else content
+
+        for r in practice_list:
+            preview = first_question_map.get(r.id)
+            paper_name = preview if preview else f'练习 {r.question_count or 0}题'
             combined_data.append({
                 'id': r.id,
                 'type': 'practice',
                 'record_type': '练习',
-                'date': r.created_at.strftime('%Y-%m-%d') if r.created_at else '',
-                'datetime': r.created_at.strftime('%Y-%m-%d %H:%M') if r.created_at else '',
-                'question_count': 1,
-                'score': 100 if r.is_correct else 0,
-                'paper_name': r.question_content[:20] + '...' if r.question_content and len(r.question_content) > 20 else r.question_content or '练习',
+                'date': r.submitted_at.strftime('%Y-%m-%d') if r.submitted_at else '',
+                'datetime': r.submitted_at.strftime('%Y-%m-%d %H:%M') if r.submitted_at else '',
+                'question_count': r.question_count or 0,
+                'score': float(r.score) if r.score else 0,
+                'paper_name': paper_name,
             })
 
-        # 按时间倒序排列
         combined_data.sort(key=lambda x: x['datetime'], reverse=True)
 
-        # 分页
         total = len(combined_data)
         start = (page - 1) * page_size
         end = start + page_size
@@ -1278,6 +1383,282 @@ class ForgotPasswordView(APIView):
         user.save()
 
         return Response({'message': '密码重置成功，请使用新密码登录'})
+
+
+class WrongQuestionDeleteView(APIView):
+    """删除错题"""
+    permission_classes = []
+
+    def delete(self, request, wrong_id):
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        try:
+            wrong = WrongQuestion.objects.get(id=wrong_id)
+        except WrongQuestion.DoesNotExist:
+            return Response({'error': '错题记录不存在'}, status=404)
+
+        if wrong.student != request.user:
+            return Response({'error': '无权删除他人的错题'}, status=403)
+
+        wrong.delete()
+        return Response({'message': '已删除'})
+
+
+class RecordDetailView(APIView):
+    """某次做题/考试记录的题目详情"""
+    permission_classes = []
+
+    def get(self, request, record_id):
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        # 先尝试 ExamRecord
+        try:
+            record = ExamRecord.objects.get(id=record_id, student=request.user)
+            details = AnswerDetail.objects.filter(record=record).select_related('question').order_by('id')
+            questions = []
+            for d in details:
+                q = d.question
+                try:
+                    options = json.loads(q.options) if q.options else {}
+                except json.JSONDecodeError:
+                    options = {}
+                questions.append({
+                    'question_id': q.id,
+                    'question_content': q.content,
+                    'question_type': q.question_type,
+                    'options': options,
+                    'student_answer': d.student_answer,
+                    'correct_answer': q.answer,
+                    'is_correct': d.is_correct,
+                })
+            return Response({
+                'record_id': record.id,
+                'type': 'practice' if record.is_practice else 'exam',
+                'paper_name': record.paper.name if record.paper else ('练习' if record.is_practice else '考试'),
+                'score': float(record.score) if record.score else 0,
+                'question_count': record.question_count or len(questions),
+                'questions': questions,
+            })
+        except ExamRecord.DoesNotExist:
+            pass
+
+        # 练习记录回退：查 PracticeRecord
+        try:
+            pr = PracticeRecord.objects.get(id=record_id, student=request.user)
+            return Response({
+                'record_id': pr.id,
+                'type': 'practice',
+                'paper_name': f'练习 - {pr.question_content[:20]}',
+                'score': 100 if pr.is_correct else 0,
+                'question_count': 1,
+                'questions': [{
+                    'question_id': pr.question_id,
+                    'question_content': pr.question_content,
+                    'question_type': pr.question_type,
+                    'options': {},
+                    'student_answer': pr.student_answer,
+                    'correct_answer': pr.correct_answer,
+                    'is_correct': pr.is_correct,
+                }],
+            })
+        except PracticeRecord.DoesNotExist:
+            return Response({'error': '记录不存在'}, status=404)
+
+
+class StudySessionStartView(APIView):
+    """开始学习时段"""
+    permission_classes = []
+
+    def post(self, request):
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        session = StudySession.objects.create(user=request.user)
+        return Response({
+            'session_id': session.id,
+            'start_time': session.start_time.isoformat()
+        })
+
+
+class StudySessionEndView(APIView):
+    """结束学习时段"""
+    permission_classes = []
+
+    def post(self, request):
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        session = StudySession.objects.filter(
+            user=request.user,
+            end_time__isnull=True
+        ).order_by('-start_time').first()
+
+        if not session:
+            return Response({'message': '没有进行中的学习时段'})
+
+        session.end_time = timezone.now()
+        session.duration = int((session.end_time - session.start_time).total_seconds())
+        session.save()
+
+        return Response({
+            'session_id': session.id,
+            'duration': session.duration
+        })
+
+
+class DailyStatsView(APIView):
+    """学生首页 - 今日做题统计"""
+    permission_classes = []
+
+    def get(self, request):
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        from datetime import timedelta
+
+        user = request.user
+        now = timezone.now()
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        today_end = today_start + timedelta(days=1)
+        today_str = now.strftime('%Y-%m-%d')
+
+        answer_stats = AnswerDetail.objects.filter(
+            record__student=user,
+            record__status__in=['submitted', 'graded'],
+            record__submitted_at__gte=today_start,
+            record__submitted_at__lt=today_end
+        ).aggregate(
+            total=Count('id'),
+            correct=Count('id', filter=Q(is_correct=True))
+        )
+        total_questions = answer_stats['total'] or 0
+        correct_questions = answer_stats['correct'] or 0
+        correct_rate = round((correct_questions / total_questions * 100) if total_questions > 0 else 0, 1)
+
+        duration_seconds = StudySession.objects.filter(
+            user=user,
+            start_time__gte=today_start,
+            start_time__lt=today_end,
+            duration__isnull=False
+        ).aggregate(total=Sum('duration'))['total'] or 0
+
+        return Response({
+            'date': today_str,
+            'count': total_questions,
+            'correct_count': correct_questions,
+            'correct_rate': correct_rate,
+            'duration': duration_seconds,
+        })
+
+
+class KnowledgeStatsView(APIView):
+    """知识点掌握分布统计"""
+    permission_classes = []
+
+    def get(self, request):
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        stats = AnswerDetail.objects.filter(
+            record__student=request.user,
+            record__status__in=['submitted', 'graded'],
+            question__isnull=False
+        ).values('question__knowledge_point').annotate(
+            total=Count('id'),
+            correct=Count('id', filter=Q(is_correct=True))
+        ).order_by('-total')
+
+        result = []
+        for item in stats:
+            kp = item['question__knowledge_point'] or '未分类'
+            result.append({
+                'knowledge_point': kp,
+                'correct': item['correct'] or 0,
+                'total': item['total'] or 0,
+            })
+
+        return Response(result)
+
+
+class StudyDurationStatsView(APIView):
+    """学习时长统计：总量 + 今日/本周/本月 + 每日分布"""
+    permission_classes = []
+
+    def get(self, request):
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        from django.db.models import Sum, F, ExpressionWrapper, DurationField
+        from django.db.models.functions import TruncDate
+        from datetime import timedelta
+
+        user = request.user
+        now = timezone.now()
+        today = now.date()
+        week_start = today - timedelta(days=today.weekday())
+        month_start = today.replace(day=1)
+
+        exam_records = ExamRecord.objects.filter(
+            student=user,
+            status__in=['submitted', 'graded'],
+            started_at__isnull=False,
+            submitted_at__isnull=False
+        ).annotate(duration=ExpressionWrapper(
+            F('submitted_at') - F('started_at'),
+            output_field=DurationField()
+        ))
+        total_exam_seconds = sum(r.duration.total_seconds() for r in exam_records if r.duration)
+
+        session_seconds = StudySession.objects.filter(
+            user=user, duration__gt=0
+        ).aggregate(total=Sum('duration'))['total'] or 0
+
+        total_seconds = total_exam_seconds + session_seconds
+
+        today_seconds = StudySession.objects.filter(
+            user=user,
+            start_time__date=today,
+            duration__gt=0
+        ).aggregate(total=Sum('duration'))['total'] or 0
+
+        week_seconds = StudySession.objects.filter(
+            user=user,
+            start_time__date__gte=week_start,
+            start_time__date__lte=today,
+            duration__gt=0
+        ).aggregate(total=Sum('duration'))['total'] or 0
+
+        month_seconds = StudySession.objects.filter(
+            user=user,
+            start_time__date__gte=month_start,
+            start_time__date__lte=today,
+            duration__gt=0
+        ).aggregate(total=Sum('duration'))['total'] or 0
+
+        daily_distribution = StudySession.objects.filter(
+            user=user,
+            start_time__date__gte=month_start,
+            start_time__date__lte=today,
+            duration__gt=0
+        ).annotate(date=TruncDate('start_time')).values('date').annotate(
+            total_duration=Sum('duration')
+        ).order_by('date')
+
+        daily = [
+            {'date': d['date'].strftime('%Y-%m-%d'), 'duration': d['total_duration'] or 0}
+            for d in daily_distribution
+        ]
+
+        return Response({
+            'total': total_seconds,
+            'today': today_seconds,
+            'week': week_seconds,
+            'month': month_seconds,
+            'daily': daily,
+        })
+
 
 
 

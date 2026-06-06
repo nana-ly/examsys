@@ -118,7 +118,9 @@ class AnswerDetail(models.Model):
         ExamRecord,
         on_delete=models.CASCADE,
         related_name='answer_details',
-        verbose_name='考试记录'
+        verbose_name='考试记录',
+        null=True,
+        blank=True
     )
     question = models.ForeignKey(
         Question,
@@ -134,10 +136,10 @@ class AnswerDetail(models.Model):
         db_table = 'answer_details'
         verbose_name = '答题详情'
         verbose_name_plural = verbose_name
-        unique_together = ['record', 'question']
     
     def __str__(self):
-        return f"{self.record.student.username} - {self.question.content[:30]}"
+        username = self.record.student.username if self.record else '手动添加'
+        return f"{username} - {self.question.content[:30]}"
 
 
 class WrongQuestion(models.Model):
@@ -212,3 +214,25 @@ class PracticeRecord(models.Model):
 
     def __str__(self):
         return f"{self.student.username} - {self.question_content[:30]}"
+
+
+class StudySession(models.Model):
+    """学习时段记录表"""
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name='study_sessions',
+        verbose_name='学生'
+    )
+    start_time = models.DateTimeField('开始时间', auto_now_add=True)
+    end_time = models.DateTimeField('结束时间', null=True, blank=True)
+    duration = models.IntegerField('时长(秒)', default=0)
+
+    class Meta:
+        db_table = 'study_sessions'
+        verbose_name = '学习时段'
+        verbose_name_plural = verbose_name
+        ordering = ['-start_time']
+
+    def __str__(self):
+        return f"{self.user.username} - {self.start_time}"

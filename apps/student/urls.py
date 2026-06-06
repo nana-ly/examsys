@@ -2,7 +2,7 @@ from django.urls import path
 from .views import (
     ExamListView, ExamDetailView, SubmitAnswerView,
     WrongQuestionListView, WrongQuestionAddView, WrongQuestionMasterView,
-    AIQuestionGenerateView, AIQuestionAskView, StartExamView, ReportTabSwitchView,
+    AIQuestionGenerateView, AIQuestionAskView, StartExamView, SaveProgressView, ReportTabSwitchView,
     PracticeModeView, PracticeKnowledgePointsView, StudyActivityView,
     PracticeRecordView, ProfileView
 )
@@ -12,6 +12,7 @@ urlpatterns = [
     path('exams/<int:exam_id>/', ExamDetailView.as_view(), name='exam-detail'),
     path('exams/<int:exam_id>/submit/', SubmitAnswerView.as_view(), name='exam-submit'),
     path('exams/<int:exam_id>/start/', StartExamView.as_view(), name='exam-start'),
+    path('exams/<int:exam_id>/progress/', SaveProgressView.as_view(), name='exam-progress'),
     path('wrongbook/', WrongQuestionListView.as_view(), name='wrongbook-list'),
     path('wrongbook/add/', WrongQuestionAddView.as_view(), name='wrongbook-add'),
     path('wrongbook/<int:wrong_id>/master/', WrongQuestionMasterView.as_view(), name='wrongbook-master'),

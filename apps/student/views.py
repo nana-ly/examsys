@@ -147,17 +147,19 @@ class SubmitAnswerView(APIView):
             except ExamRecord.DoesNotExist:
                 return Response({'error': '没有找到进行中的考试记录，请先开始考试'}, status=400)
 
-            # 创建 AnswerDetail
+            # 保存 AnswerDetail（已有自动保存进度，用 update_or_create 避免重复插入）
             for paper_q in paper_questions:
                 question = paper_q.question
                 student_answer = answer_dict.get(question.id, '')
                 is_correct = str(student_answer).strip() == str(question.answer).strip()
 
-                AnswerDetail.objects.create(
+                AnswerDetail.objects.update_or_create(
                     record=exam_record,
                     question=question,
-                    student_answer=str(student_answer),
-                    is_correct=is_correct
+                    defaults={
+                        'student_answer': str(student_answer),
+                        'is_correct': is_correct
+                    }
                 )
 
             # 添加错题到错题本
@@ -198,6 +200,15 @@ class WrongQuestionListView(APIView):
             queryset = queryset.filter(question__knowledge_point=knowledge_point)
 
         queryset = queryset.order_by('-created_at')
+
+        # summary 模式：只返回数量统计，不返回全量数据（首页只需要错题数）
+        if request.query_params.get('summary') == 'true':
+            total = queryset.count()
+            unmastered_count = queryset.filter(is_mastered=False).count() if mastered is None else 0
+            return Response({
+                'total': total,
+                'unmastered_count': unmastered_count,
+            })
 
         serializer = WrongQuestionSerializer(queryset, many=True)
         return Response(serializer.data)
@@ -597,6 +608,55 @@ class StartExamView(APIView):
             'message': '开始考试成功',
             'exam_record_id': exam_record.id
         })
+
+
+class SaveProgressView(APIView):
+    """保存答题进度 + 服务端超时验证"""
+
+    def post(self, request, exam_id):
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        try:
+            exam = ExamPaper.objects.get(
+                id=exam_id,
+                published_at__isnull=False,
+                published_at__lte=timezone.now()
+            )
+        except ExamPaper.DoesNotExist:
+            return Response({'error': '试卷不存在'}, status=404)
+
+        # 获取进行中的 ExamRecord
+        exam_record = ExamRecord.objects.filter(
+            student=request.user,
+            paper=exam,
+            status='ongoing'
+        ).first()
+
+        if not exam_record:
+            return Response({'error': '没有进行中的考试记录'}, status=400)
+
+        # 服务端超时验证
+        duration_minutes = exam.duration or 120
+        deadline = exam_record.started_at + timezone.timedelta(minutes=duration_minutes)
+        if timezone.now() > deadline:
+            return Response({'error': '考试时间已到', 'timed_out': True}, status=403)
+
+        # 保存/更新部分答案到 AnswerDetail
+        answers = request.data.get('answers', {})
+        if answers:
+            paper_questions = exam.paper_questions.select_related('question').all()
+            for pq in paper_questions:
+                question = pq.question
+                if str(question.id) in answers:
+                    student_answer = str(answers[str(question.id)])
+                    AnswerDetail.objects.update_or_create(
+                        record=exam_record,
+                        question=question,
+                        defaults={'student_answer': student_answer}
+                    )
+
+        return Response({'saved': True})
 
 
 class ReportTabSwitchView(APIView):

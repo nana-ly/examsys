@@ -108,6 +108,13 @@ REST_FRAMEWORK = {
     'PAGE_SIZE': 10,
 }
 
+
+# Session 持久化设置（签名 Cookie，零数据库依赖，不受 MySQL 网络抖动影响）
+SESSION_ENGINE = 'django.contrib.sessions.backends.signed_cookies'
+SESSION_COOKIE_AGE = 86400 * 30  # 30 天
+SESSION_COOKIE_SAMESITE = 'Lax'
+SESSION_COOKIE_HTTPONLY = True
+
 # CORS settings
 CORS_ALLOW_ALL_ORIGINS = False
 CORS_ALLOWED_ORIGIN_REGEXES = [

@@ -1001,6 +1001,203 @@ class PracticeKnowledgePointsView(APIView):
         })
 
 
+class PracticeIncompleteView(APIView):
+    """保存未完成的练习（离开练习页时调用）"""
+    permission_classes = []
+
+    def post(self, request):
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        questions = request.data.get('questions', [])
+        answers = request.data.get('answers', {})
+        paper_name = request.data.get('paper_name', '练习模式')
+        record_id = request.data.get('record_id')
+        source_type = request.data.get('source_type', 'main')
+
+        if not questions:
+            return Response({'error': '缺少题目数据'}, status=400)
+
+        # 如果有 record_id，说明是更新已有未完成记录
+        if record_id:
+            try:
+                record = ExamRecord.objects.get(
+                    id=record_id, student=request.user,
+                    is_practice=True, is_completed=False
+                )
+                # 删除旧的 AnswerDetail，重新创建
+                AnswerDetail.objects.filter(record=record).delete()
+                record.question_count = len(questions)
+                record.save()
+            except ExamRecord.DoesNotExist:
+                record_id = None
+
+        if not record_id:
+            # 创建新的未完成练习记录
+            record = ExamRecord.objects.create(
+                student=request.user,
+                paper=None,
+                score=None,
+                status='ongoing',
+                is_practice=True,
+                is_completed=False,
+                question_count=len(questions),
+            )
+
+        # 保存题目和已有答案到 AnswerDetail
+        for idx, q_data in enumerate(questions):
+            q_id = q_data.get('id')
+            if not q_id:
+                continue
+            try:
+                question = Question.objects.get(id=q_id)
+            except Question.DoesNotExist:
+                continue
+            student_answer = answers.get(str(q_id), '')
+            AnswerDetail.objects.create(
+                record=record,
+                question=question,
+                student_answer=student_answer if student_answer else '',
+                is_correct=False,
+            )
+
+        return Response({
+            'record_id': record.id,
+            'message': '未完成练习已保存',
+        })
+
+
+class PracticeRecordQuestionsView(APIView):
+    """获取未完成练习记录的题目和已有答案"""
+    permission_classes = []
+
+    def get(self, request, record_id):
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        try:
+            record = ExamRecord.objects.get(
+                id=record_id, student=request.user,
+                is_practice=True, is_completed=False
+            )
+        except ExamRecord.DoesNotExist:
+            return Response({'error': '未完成的练习记录不存在'}, status=404)
+
+        details = AnswerDetail.objects.filter(record=record).select_related('question').order_by('id')
+        questions = []
+        answers = {}
+        for d in details:
+            q = d.question
+            try:
+                options = json.loads(q.options) if q.options else {}
+            except json.JSONDecodeError:
+                options = {}
+            questions.append({
+                'id': q.id,
+                'content': q.content,
+                'question_type': q.question_type,
+                'options': options,
+                'answer': q.answer,
+                'analysis': q.analysis or '',
+                'knowledge_point': q.knowledge_point or '',
+                'difficulty': q.difficulty,
+            })
+            answers[str(q.id)] = d.student_answer if d.student_answer else ''
+
+        return Response({
+            'paper_name': '练习模式',
+            'questions': questions,
+            'answers': answers,
+            'record_id': record.id,
+        })
+
+
+class PracticeRecordCompleteView(APIView):
+    """完成提交未完成的练习"""
+    permission_classes = []
+
+    def post(self, request, record_id):
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        try:
+            record = ExamRecord.objects.get(
+                id=record_id, student=request.user,
+                is_practice=True, is_completed=False
+            )
+        except ExamRecord.DoesNotExist:
+            return Response({'error': '未完成的练习记录不存在'}, status=404)
+
+        answers = request.data.get('answers', [])
+        if not answers:
+            return Response({'error': '请提交答案'}, status=400)
+
+        answers_dict = {item['question_id']: item.get('answer', '') for item in answers}
+        question_ids = list(answers_dict.keys())
+        questions = Question.objects.filter(id__in=question_ids)
+        question_map = {q.id: q for q in questions}
+
+        total_count = len(question_ids)
+        correct_count = 0
+        details = []
+
+        with transaction.atomic():
+            # 更新已有的 AnswerDetail
+            for q_id, student_answer in answers_dict.items():
+                question = question_map.get(q_id)
+                if question is None:
+                    continue
+                if not student_answer:
+                    is_correct = False
+                else:
+                    is_correct = str(student_answer).strip() == str(question.answer).strip()
+                if is_correct:
+                    correct_count += 1
+                details.append({
+                    'question_id': question.id,
+                    'content': question.content,
+                    'correct': is_correct,
+                    'correct_answer': question.answer,
+                    'analysis': question.analysis or ''
+                })
+                # 更新 AnswerDetail
+                AnswerDetail.objects.filter(
+                    record=record, question_id=q_id
+                ).update(
+                    student_answer=str(student_answer) if student_answer else '未作答',
+                    is_correct=is_correct,
+                )
+
+            # 添加错题到错题本
+            for q_id in question_ids:
+                q = question_map.get(q_id)
+                if not q:
+                    continue
+                student_answer = answers_dict.get(q_id, '')
+                is_correct = str(student_answer).strip() == str(q.answer).strip()
+                if not is_correct:
+                    WrongQuestion.objects.get_or_create(
+                        student=request.user,
+                        question=q
+                    )
+
+            # 更新记录状态
+            accuracy = round(correct_count / total_count * 100, 1) if total_count > 0 else 0
+            record.score = accuracy
+            record.status = 'submitted'
+            record.is_completed = True
+            record.submitted_at = timezone.now()
+            record.question_count = total_count
+            record.save()
+
+        return Response({
+            'total': total_count,
+            'correct': correct_count,
+            'accuracy': accuracy,
+            'details': details,
+        })
+
+
 class StudyActivityView(APIView):
     """学生学习活跃度数据 - 按月展示的日历热力图"""
     permission_classes = []
@@ -1123,18 +1320,27 @@ class PracticeRecordView(APIView):
         page_size = int(request.query_params.get('page_size', 5))
         record_type = request.query_params.get('record_type')
 
-        base_qs = ExamRecord.objects.filter(
+        # 已完成的记录
+        completed_qs = ExamRecord.objects.filter(
             student=request.user,
-            status__in=['submitted', 'graded']
+            is_completed=True,
+        ).select_related('paper', 'student')
+
+        # 未完成的练习记录（is_completed=False）
+        incomplete_qs = ExamRecord.objects.filter(
+            student=request.user,
+            is_practice=True,
+            is_completed=False,
         ).select_related('paper', 'student')
 
         if record_type == 'exam':
-            base_qs = base_qs.filter(is_practice=False)
+            completed_qs = completed_qs.filter(is_practice=False)
+            incomplete_qs = incomplete_qs.none()
         elif record_type == 'practice':
-            base_qs = base_qs.filter(is_practice=True)
+            completed_qs = completed_qs.filter(is_practice=True)
 
-        exam_qs = base_qs.filter(is_practice=False).order_by('-submitted_at') if record_type in (None, 'exam') else base_qs.none()
-        practice_qs = base_qs.filter(is_practice=True).order_by('-submitted_at') if record_type in (None, 'practice') else base_qs.none()
+        exam_qs = completed_qs.filter(is_practice=False).order_by('-submitted_at') if record_type in (None, 'exam') else completed_qs.none()
+        practice_qs = completed_qs.filter(is_practice=True).order_by('-submitted_at') if record_type in (None, 'practice') else completed_qs.none()
 
         combined_data = []
 
@@ -1143,6 +1349,7 @@ class PracticeRecordView(APIView):
                 'id': r.id,
                 'type': 'exam',
                 'record_type': '考试',
+                'is_completed': True,
                 'date': r.submitted_at.strftime('%Y-%m-%d') if r.submitted_at else '',
                 'datetime': r.submitted_at.strftime('%Y-%m-%d %H:%M') if r.submitted_at else '',
                 'question_count': r.question_count or 0,
@@ -1171,10 +1378,41 @@ class PracticeRecordView(APIView):
                 'id': r.id,
                 'type': 'practice',
                 'record_type': '练习',
+                'is_completed': True,
                 'date': r.submitted_at.strftime('%Y-%m-%d') if r.submitted_at else '',
                 'datetime': r.submitted_at.strftime('%Y-%m-%d %H:%M') if r.submitted_at else '',
                 'question_count': r.question_count or 0,
                 'score': float(r.score) if r.score else 0,
+                'paper_name': paper_name,
+            })
+
+        # 未完成的练习记录
+        incomplete_list = list(incomplete_qs.order_by('-started_at'))
+        incomplete_ids = [r.id for r in incomplete_list]
+        incomplete_first_map = {}
+        if incomplete_ids:
+            inc_details = AnswerDetail.objects.filter(
+                record_id__in=incomplete_ids
+            ).select_related('question').order_by('record_id', 'id')
+            seen = set()
+            for d in inc_details:
+                if d.record_id not in seen:
+                    seen.add(d.record_id)
+                    content = d.question.content or ''
+                    incomplete_first_map[d.record_id] = (content[:20] + '...') if len(content) > 20 else content
+
+        for r in incomplete_list:
+            preview = incomplete_first_map.get(r.id)
+            paper_name = preview if preview else f'练习 {r.question_count or 0}题'
+            combined_data.append({
+                'id': r.id,
+                'type': 'practice',
+                'record_type': '练习',
+                'is_completed': False,
+                'date': r.started_at.strftime('%Y-%m-%d') if r.started_at else '',
+                'datetime': r.started_at.strftime('%Y-%m-%d %H:%M') if r.started_at else '',
+                'question_count': r.question_count or 0,
+                'score': 0,
                 'paper_name': paper_name,
             })
 
@@ -1219,6 +1457,25 @@ class PracticeRecordView(APIView):
             'message': '保存成功',
             'record_id': record.id,
         })
+
+
+class PracticeRecordDeleteView(APIView):
+    """删除练习/考试记录"""
+    permission_classes = []
+
+    def delete(self, request, record_id):
+        if not request.user.is_authenticated:
+            return Response({'error': '请先登录'}, status=401)
+
+        try:
+            record = ExamRecord.objects.get(id=record_id, student=request.user)
+        except ExamRecord.DoesNotExist:
+            return Response({'error': '记录不存在'}, status=404)
+
+        # 级联删除 AnswerDetail
+        AnswerDetail.objects.filter(record=record).delete()
+        record.delete()
+        return Response({'message': '删除成功'})
 
 
 class ProfileView(APIView):

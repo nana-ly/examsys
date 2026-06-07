@@ -5,6 +5,8 @@ from .views import (
     AIQuestionGenerateView, AIQuestionAskView, StartExamView, SaveProgressView, ReportTabSwitchView,
     PracticeModeView, PracticeKnowledgePointsView, StudyActivityView,
     PracticeRecordView, RecordDetailView, ProfileView,
+    PracticeIncompleteView, PracticeRecordQuestionsView, PracticeRecordCompleteView,
+    PracticeRecordDeleteView,
     StudySessionStartView, StudySessionEndView,
     ChangePasswordView, ForgotPasswordView, DailyStatsView,
     KnowledgeStatsView, StudyDurationStatsView
@@ -27,9 +29,13 @@ urlpatterns = [
     # 练习模式
     path('practice/', PracticeModeView.as_view(), name='practice-mode'),
     path('practice/knowledge_points/', PracticeKnowledgePointsView.as_view(), name='practice-knowledge-points'),
+    path('practice/incomplete/', PracticeIncompleteView.as_view(), name='practice-incomplete'),
     # 做题记录
     path('practice/records/', PracticeRecordView.as_view(), name='practice-records'),
     path('practice/records/<int:record_id>/detail/', RecordDetailView.as_view(), name='record-detail'),
+    path('practice/records/<int:record_id>/questions/', PracticeRecordQuestionsView.as_view(), name='practice-record-questions'),
+    path('practice/records/<int:record_id>/complete/', PracticeRecordCompleteView.as_view(), name='practice-record-complete'),
+    path('practice/records/<int:record_id>/', PracticeRecordDeleteView.as_view(), name='practice-record-delete'),
     # 学习活跃度
     path('activity/', StudyActivityView.as_view(), name='study-activity'),
     # 学生个人信息

@@ -13,7 +13,7 @@ class ExamListSerializer(serializers.ModelSerializer):
         model = ExamPaper
         fields = [
             'id', 'name', 'duration', 'total_score',
-            'published_at', 'creator_name', 'question_count'
+            'published_at', 'end_time', 'creator_name', 'question_count'
         ]
 
     def get_question_count(self, obj):
@@ -52,7 +52,7 @@ class ExamDetailSerializer(serializers.ModelSerializer):
         model = ExamPaper
         fields = [
             'id', 'name', 'duration', 'total_score',
-            'published_at', 'creator_name', 'questions'
+            'published_at', 'end_time', 'creator_name', 'questions'
         ]
 
     def get_questions(self, obj):

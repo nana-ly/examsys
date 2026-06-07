@@ -99,6 +99,7 @@ class ExamRecord(models.Model):
     submitted_at = models.DateTimeField('提交时间', null=True, blank=True)
     tab_switch_count = models.IntegerField('切屏次数', default=0)
     is_practice = models.BooleanField('是否练习', default=False)
+    is_completed = models.BooleanField('是否完成', default=True)
     question_count = models.IntegerField('题目数量', default=0)
 
     class Meta:

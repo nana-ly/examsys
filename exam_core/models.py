@@ -16,6 +16,7 @@ class ExamPaper(models.Model):
     total_score = models.DecimalField('总分', max_digits=5, decimal_places=1, default=100)
     pass_score = models.DecimalField('及格分数', max_digits=5, decimal_places=1, default=60)
     duration = models.IntegerField('时长(分钟)', default=120)
+    end_time = models.DateTimeField('截止时间', blank=True, null=True)
     published_at = models.DateTimeField('发布时间', blank=True, null=True)
     creator = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -118,9 +119,7 @@ class AnswerDetail(models.Model):
         ExamRecord,
         on_delete=models.CASCADE,
         related_name='answer_details',
-        verbose_name='考试记录',
-        null=True,
-        blank=True
+        verbose_name='考试记录'
     )
     question = models.ForeignKey(
         Question,
@@ -136,10 +135,10 @@ class AnswerDetail(models.Model):
         db_table = 'answer_details'
         verbose_name = '答题详情'
         verbose_name_plural = verbose_name
+        unique_together = ['record', 'question']
     
     def __str__(self):
-        username = self.record.student.username if self.record else '手动添加'
-        return f"{username} - {self.question.content[:30]}"
+        return f"{self.record.student.username} - {self.question.content[:30]}"
 
 
 class WrongQuestion(models.Model):

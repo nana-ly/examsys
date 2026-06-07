@@ -61,7 +61,7 @@ class QuestionViewSet(viewsets.ModelViewSet):
         if page is not None:
             serializer = QuestionListSerializer(page, many=True)
             return self.get_paginated_response(serializer.data)
-        
+
         serializer = QuestionListSerializer(queryset, many=True)
         return Response(serializer.data)
     

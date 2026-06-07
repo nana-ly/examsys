@@ -46,11 +46,12 @@ class UserViewSet(viewsets.ModelViewSet):
 
 class ClassViewSet(viewsets.ModelViewSet):
     """班级管理视图集"""
-    queryset = Class.objects.all()
+    queryset = Class.objects.all().order_by('-created_at')
     permission_classes = [IsAuthenticated]
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
     search_fields = ['name', 'class_code']
     ordering_fields = ['created_at', 'name']
+    pagination_class = None  # 教师端需要全量班级列表用于筛选
     
     def get_serializer_class(self):
         if self.action in ['create', 'update', 'partial_update']:

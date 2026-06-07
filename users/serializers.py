@@ -77,6 +77,15 @@ class ClassCreateSerializer(serializers.ModelSerializer):
         fields = ['name', 'class_code']
         extra_kwargs = {'class_code': {'required': False}}
 
+    def validate_name(self, value):
+        user = self.context['request'].user
+        qs = Class.objects.filter(name=value, teacher=user)
+        if self.instance:
+            qs = qs.exclude(id=self.instance.id)
+        if qs.exists():
+            raise serializers.ValidationError('您已经创建过同名班级，请使用不同的班级名称')
+        return value
+
     def create(self, validated_data):
         validated_data['teacher'] = self.context['request'].user
         if not validated_data.get('class_code'):

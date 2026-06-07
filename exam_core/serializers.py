@@ -39,7 +39,7 @@ class ExamPaperListSerializer(serializers.ModelSerializer):
         model = ExamPaper
         fields = [
             'id', 'name', 'target_class_name', 'total_score',
-            'duration', 'published_at', 'creator_name',
+            'duration', 'end_time', 'published_at', 'creator_name',
             'question_count', 'created_at'
         ]
 
@@ -55,7 +55,7 @@ class ExamPaperCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = ExamPaper
-        fields = ['name', 'target_class', 'total_score', 'duration', 'published_at', 'question_ids']
+        fields = ['name', 'target_class', 'total_score', 'duration', 'end_time', 'published_at', 'question_ids']
 
     def to_internal_value(self, data):
         data = dict(data)
@@ -69,6 +69,8 @@ class ExamPaperCreateSerializer(serializers.ModelSerializer):
             data['total_score'] = data.pop('totalScore')
         if 'startTime' in data and 'published_at' not in data:
             data['published_at'] = data.pop('startTime')
+        if 'start_time' in data and 'published_at' not in data:
+            data['published_at'] = data.pop('start_time')
         if 'questions' in data and 'question_ids' not in data:
             questions = data.pop('questions')
             data['question_ids'] = [q['question_id'] if isinstance(q, dict) else q for q in questions]

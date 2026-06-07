@@ -88,19 +88,39 @@ class SubmitAnswerView(APIView):
 
         # 获取提交的答案
         answers = request.data.get('answers', [])
+        paper_questions = exam.paper_questions.select_related('question').all()
+        total_count = len(paper_questions)
+
+        # 0 题的试卷允许直接提交
+        if total_count == 0:
+            with transaction.atomic():
+                try:
+                    exam_record = ExamRecord.objects.get(
+                        student=request.user,
+                        paper=exam,
+                        status='ongoing'
+                    )
+                    exam_record.score = 0
+                    exam_record.status = 'submitted'
+                    exam_record.question_count = 0
+                    exam_record.submitted_at = timezone.now()
+                    exam_record.save()
+                except ExamRecord.DoesNotExist:
+                    pass
+            return Response({
+                'total': 0, 'correct': 0, 'score': 0, 'details': []
+            })
+
         if not answers:
             return Response({'error': '请提交答案'}, status=400)
 
         # 构建答案字典 {question_id: answer}
         answer_dict = {item['question_id']: item['answer'] for item in answers}
 
-        # 获取试卷的所有题目
-        paper_questions = exam.paper_questions.select_related('question').all()
         question_map = {pq.question_id: pq for pq in paper_questions}
 
         # 自动批改
         correct_count = 0
-        total_count = len(paper_questions)
         details = []
         wrong_question_ids = []
 
@@ -384,19 +404,29 @@ class AIQuestionGenerateView(APIView):
         if count < 1:
             count = 1
 
-        # 题型映射 (内部使用)
+        # 题型映射 (接收前端传入的 question_type，转换为中文描述)
         type_map = {
             'choice': '单选题',
+            'true_false': '判断题',
+            'multiple_choice': '多选题',
+            'fill_blank': '填空题',
+            'essay': '简答题',
+            # 兼容旧前端传值
             'judge': '判断题',
-            'multiple': '多选题'
+            'multiple': '多选题',
         }
         question_type_cn = type_map.get(question_type, '单选题')
 
         # 前端题型映射 (返回给前端)
         frontend_type_map = {
             'choice': 'choice',
+            'true_false': 'true_false',
+            'multiple_choice': 'multiple_choice',
+            'fill_blank': 'fill_blank',
+            'essay': 'essay',
+            # 兼容旧键
             'judge': 'true_false',
-            'multiple': 'multiple_choice'
+            'multiple': 'multiple_choice',
         }
         frontend_question_type = frontend_type_map.get(question_type, 'choice')
 
@@ -408,25 +438,48 @@ class AIQuestionGenerateView(APIView):
         }
         difficulty_cn = diff_map.get(difficulty, '中等')
 
-        # 构建 Prompt (单题生成)
-        is_multiple = (question_type == 'multiple')
-        multi_instruction = ''
-        if is_multiple:
-            multi_instruction = '\n注意：这是**多选题**，必须返回多个正确答案，answer格式如"A,B,C"。如果该知识点无法出多选题，请改为出单选题并设置question_type为"choice"。\n'
+        # 构建 Prompt —— 根据题型生成不同的提示
+        is_true_false = (question_type in ('true_false', 'judge'))
+        is_multiple = (question_type in ('multiple_choice', 'multiple'))
+        is_fill_blank = (question_type == 'fill_blank')
+        is_essay = (question_type == 'essay')
+
+        # 构建每种题型的 JSON 示例格式
+        if is_true_false:
+            type_example = '{"content": "判断以下说法是否正确：XXX", "question_type": "true_false", "options": {"正确": "正确", "错误": "错误"}, "answer": "正确", "analysis": "详细解析"}'
+        elif is_multiple:
+            type_example = '{"content": "以下哪些是XXX？（多选）", "question_type": "multiple_choice", "options": {"A": "选项A", "B": "选项B", "C": "选项C", "D": "选项D"}, "answer": "A,C", "analysis": "详细解析"}'
+        elif is_fill_blank:
+            type_example = '{"content": "XXX的______是YYY。多空用英文分号隔开，如 答案1;答案2", "question_type": "fill_blank", "options": {}, "answer": "正确答案", "analysis": "详细解析"}'
+        elif is_essay:
+            type_example = '{"content": "请简述XXX的原理和实现方法。", "question_type": "essay", "options": {}, "answer": "参考答案要点：1. ... 2. ...", "analysis": "详细解析"}'
+        else:
+            type_example = '{"content": "题目内容", "question_type": "choice", "options": {"A": "选项A", "B": "选项B", "C": "选项C", "D": "选项D"}, "answer": "A", "analysis": "详细解析"}'
+
+        # 题型特殊要求
+        type_requirements = ''
+        if is_true_false:
+            type_requirements = '\n注意：这是**判断题**，只需要判断正误。答案只能是"正确"或"错误"。options固定为{"正确":"正确","错误":"错误"}。\n'
+        elif is_multiple:
+            type_requirements = '\n注意：这是**多选题**，必须返回2个或以上正确答案，answer格式如"A,C,D"（多个答案用英文逗号连接）。选项数量4-6个。如果该知识点确实无法出多选题，请改为出单选题并设question_type为"choice"。\n'
+        elif is_fill_blank:
+            type_requirements = '\n注意：这是**填空题**，题目中挖空处用______或___标记。多个填空的答案用英文分号隔开，如"答案1;答案2"。options可以为空对象{}。\n'
+        elif is_essay:
+            type_requirements = '\n注意：这是**简答题**，需要学生用自己的话作答。answer字段填写参考答案要点，分点列出。options可以为空对象{}。\n'
 
         # 单题 Prompt 模板
         single_prompt_template = """你是一位资深的网络安全/计算机专业出题老师。
 
 你需要出一道{question_type_cn}，知识点：「{knowledge_point}」，难度：「{difficulty_cn}」。
-{multi_instruction}
+{type_requirements}
 要求：
 1. 题目要结合实际应用场景，考查理解能力而非死记硬背
-2. 选项要有迷惑性，错误选项要像常见错误答案
+2. 选项要有迷惑性，错误选项要像常见错误答案（判断题、填空题、简答题除外）
 3. 解析要详细（50字以上），解释为什么对、为什么错
-4. 严格按JSON格式返回
+4. 严格按JSON格式返回，不要有额外文字
 
-返回格式：
-{{"content": "题目内容", "question_type": "choice", "options": {{"A": "选项A", "B": "选项B", "C": "选项C", "D": "选项D"}}, "answer": "A", "analysis": "详细解析"}}"""
+返回格式示例：
+{type_example}"""
 
         def generate_single_question(index):
             """生成单题的函数，供线程池调用"""
@@ -434,7 +487,8 @@ class AIQuestionGenerateView(APIView):
                 question_type_cn=question_type_cn,
                 knowledge_point=knowledge_point,
                 difficulty_cn=difficulty_cn,
-                multi_instruction=multi_instruction
+                type_requirements=type_requirements,
+                type_example=type_example
             )
             
             api_url = 'https://open.bigmodel.cn/api/paas/v4/chat/completions'

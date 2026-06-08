@@ -286,7 +286,7 @@ class WrongQuestionAddView(APIView):
                 answer=correct_answer,
                 knowledge_point=knowledge_point,
                 analysis=analysis,
-                created_by=request.user
+                creator=request.user
             )
 
             WrongQuestion.objects.create(
